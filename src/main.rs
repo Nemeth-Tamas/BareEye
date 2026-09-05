@@ -1,10 +1,10 @@
+mod app;
 mod camera;
 
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    println!("BareEye EagleEye IV hardware probe");
-    println!("===================================");
+    let arguments: Vec<String> = std::env::args().collect();
 
     let devices = cameras::devices()?;
 
@@ -24,17 +24,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
 
-    camera::probe_device(eagleeye);
-
-    if std::env::args().any(|argument| argument == "--ptz-test") {
-        camera::ptz::run_console(eagleeye)?;
-    } else {
-        println!();
-        println!("Run with --ptz-test to enter the manual PTZ test console.");
+    if arguments.iter().any(|argument| argument == "--probe") {
+        camera::probe_device(eagleeye);
+        return Ok(());
     }
 
-    println!();
-    println!("BareEye finished.");
+    if arguments.iter().any(|argument| argument == "--ptz-test") {
+        camera::probe_device(eagleeye);
+        camera::ptz::run_console(eagleeye)?;
+        return Ok(());
+    }
+
+    let (camera, preview_info) = camera::open_preview(eagleeye)?;
+
+    app::run(camera, preview_info)?;
 
     Ok(())
 }
