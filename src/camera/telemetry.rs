@@ -1,7 +1,7 @@
 use cameras::{Frame, PixelFormat};
 use std::time::{Duration, Instant};
 
-const TIMING_GAP_THRESHOLD: Duration = Duration::from_millis(80);
+const TIMING_GAP_THRESHOLD: Duration = Duration::from_millis(50);
 
 #[derive(Copy, Clone, Default)]
 pub struct StreamTelemetrySnapshot {

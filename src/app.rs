@@ -2,9 +2,10 @@ use crate::camera::ptz::ManualController;
 use crate::camera::{PreviewInfo, StreamTelemetry};
 use eframe::egui;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
+const RAW_FRAME_QUEUE_CAPACITY: usize = 4;
 const PREVIEW_QUEUE_CAPACITY: usize = 2;
 const SLOW_DECODE: Duration = Duration::from_millis(33);
 const SLOW_TEXTURE_UPDATE: Duration = Duration::from_millis(33);
@@ -39,11 +40,13 @@ struct PreviewWorkerStats {
     decode_ms: f32,
     decode_peak_ms: f32,
     slow_decodes: u64,
+    raw_queue_drops: u64,
     queue_drops: u64,
 }
 
 struct PreviewStream {
     pump: egui_cameras::Pump,
+    decoder: std::thread::JoinHandle<()>,
     queue: Arc<Mutex<VecDeque<Result<egui::ColorImage, String>>>>,
     worker_stats: Arc<Mutex<PreviewWorkerStats>>,
     texture: Option<egui::TextureHandle>,
@@ -51,6 +54,13 @@ struct PreviewStream {
 }
 
 impl PreviewStream {
+    fn stop(self) {
+        let PreviewStream { pump, decoder, .. } = self;
+
+        egui_cameras::stop_and_join(pump);
+        let _ = decoder.join();
+    }
+
     fn update_texture(&mut self, ctx: &egui::Context) -> Result<bool, String> {
         let next_image = self
             .queue
@@ -121,9 +131,10 @@ fn spawn_camera_stream(
     info: &PreviewInfo,
 ) -> (PreviewStream, Arc<Mutex<StreamTelemetry>>) {
     let queue = Arc::new(Mutex::new(VecDeque::with_capacity(PREVIEW_QUEUE_CAPACITY)));
-    let pump_queue = Arc::clone(&queue);
+    let decoder_queue = Arc::clone(&queue);
 
     let worker_stats = Arc::new(Mutex::new(PreviewWorkerStats::default()));
+    let decoder_worker_stats = Arc::clone(&worker_stats);
     let pump_worker_stats = Arc::clone(&worker_stats);
 
     let telemetry = Arc::new(Mutex::new(StreamTelemetry::new(
@@ -133,56 +144,78 @@ fn spawn_camera_stream(
     )));
     let pump_telemetry = Arc::clone(&telemetry);
 
+    let (raw_sender, raw_receiver) = mpsc::sync_channel::<cameras::Frame>(RAW_FRAME_QUEUE_CAPACITY);
+
+    let decoder = std::thread::Builder::new()
+        .name("bareeye-decoder".to_owned())
+        .spawn(move || {
+            while let Ok(frame) = raw_receiver.recv() {
+                let decode_started = Instant::now();
+                let decoded =
+                    egui_cameras::frame_to_color_image(&frame).map_err(|error| error.to_string());
+                let decode_elapsed = decode_started.elapsed();
+
+                {
+                    let mut stats = decoder_worker_stats
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+
+                    stats.decode_ms = decode_elapsed.as_secs_f32() * 1000.0;
+                    stats.decode_peak_ms = stats.decode_peak_ms.max(stats.decode_ms);
+
+                    if decode_elapsed >= SLOW_DECODE {
+                        stats.slow_decodes += 1;
+                    }
+                }
+
+                let dropped = {
+                    let mut queue = decoder_queue.lock().unwrap_or_else(PoisonError::into_inner);
+
+                    let dropped = queue.len() >= PREVIEW_QUEUE_CAPACITY;
+
+                    if dropped {
+                        queue.pop_front();
+                    }
+
+                    queue.push_back(decoded);
+
+                    dropped
+                };
+
+                if dropped {
+                    decoder_worker_stats
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .queue_drops += 1;
+                }
+
+                repaint_context.request_repaint();
+            }
+        })
+        .expect("failed to start BareEye decoder worker");
+
     let pump = cameras::pump::spawn(camera, move |frame| {
         pump_telemetry
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .observe(&frame);
 
-        let decode_started = Instant::now();
-        let decoded = egui_cameras::frame_to_color_image(&frame).map_err(|error| error.to_string());
-        let decode_elapsed = decode_started.elapsed();
-
-        {
-            let mut stats = pump_worker_stats
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-
-            stats.decode_ms = decode_elapsed.as_secs_f32() * 1000.0;
-            stats.decode_peak_ms = stats.decode_peak_ms.max(stats.decode_ms);
-
-            if decode_elapsed >= SLOW_DECODE {
-                stats.slow_decodes += 1;
+        match raw_sender.try_send(frame) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Full(_)) => {
+                pump_worker_stats
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .raw_queue_drops += 1;
             }
+            Err(mpsc::TrySendError::Disconnected(_)) => {}
         }
-
-        let dropped = {
-            let mut queue = pump_queue.lock().unwrap_or_else(PoisonError::into_inner);
-
-            let dropped = queue.len() >= PREVIEW_QUEUE_CAPACITY;
-
-            if dropped {
-                queue.pop_front();
-            }
-
-            queue.push_back(decoded);
-
-            dropped
-        };
-
-        if dropped {
-            pump_worker_stats
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .queue_drops += 1;
-        }
-
-        repaint_context.request_repaint();
     });
 
     (
         PreviewStream {
             pump,
+            decoder,
             queue,
             worker_stats,
             texture: None,
@@ -321,9 +354,7 @@ impl eframe::App for BareEyeApp {
             .as_ref()
             .map_or_else(PreviewWorkerStats::default, |stream| stream.worker_stats());
 
-        let not_displayed = telemetry
-            .arrived_frames
-            .saturating_sub(self.uploaded_frames + buffered_frames as u64);
+        let pipeline_drops = worker_stats.raw_queue_drops + worker_stats.queue_drops;
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.horizontal(|ui| {
@@ -358,7 +389,11 @@ impl eframe::App for BareEyeApp {
 
                 ui.separator();
 
-                ui.label(format!("Not displayed: {not_displayed}"));
+                ui.label(format!("Pipeline drops: {pipeline_drops}"));
+
+                ui.separator();
+
+                ui.label(format!("Source gaps: {}", telemetry.timing_anomalies));
 
                 ui.separator();
 
@@ -367,10 +402,6 @@ impl eframe::App for BareEyeApp {
                 ui.separator();
 
                 ui.label(format!("Format anomalies: {}", telemetry.format_anomalies));
-
-                ui.separator();
-
-                ui.label(format!("Timing gaps: {}", telemetry.timing_anomalies));
             });
 
             ui.horizontal(|ui| {
@@ -410,7 +441,11 @@ impl eframe::App for BareEyeApp {
 
                 ui.separator();
 
-                ui.label(format!("Queue drops: {}", worker_stats.queue_drops));
+                ui.label(format!("Raw queue drops: {}", worker_stats.raw_queue_drops));
+
+                ui.separator();
+
+                ui.label(format!("Decoded queue drops: {}", worker_stats.queue_drops));
 
                 ui.separator();
 
@@ -560,7 +595,7 @@ impl eframe::App for BareEyeApp {
 impl Drop for BareEyeApp {
     fn drop(&mut self) {
         if let Some(stream) = self.stream.take() {
-            egui_cameras::stop_and_join(stream.pump);
+            stream.stop();
         }
     }
 }
