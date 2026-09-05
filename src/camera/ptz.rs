@@ -24,6 +24,137 @@ impl Axis {
     }
 }
 
+pub struct ManualController {
+    device: Device,
+    capabilities: ControlCapabilities,
+    pan_target: f32,
+    tilt_target: f32,
+    zoom_target: f32,
+}
+
+impl ManualController {
+    pub fn new(device: Device) -> Result<Self, cameras::Error> {
+        let capabilities = cameras::control_capabilities(&device)?;
+        let controls = cameras::read_controls(&device)?;
+
+        let pan_target = controls
+            .pan
+            .or_else(|| capabilities.pan.map(|range| range.default))
+            .unwrap_or(0.0);
+
+        let tilt_target = controls
+            .tilt
+            .or_else(|| capabilities.tilt.map(|range| range.default))
+            .unwrap_or(0.0);
+
+        let zoom_target = controls
+            .zoom
+            .or_else(|| capabilities.zoom.map(|range| range.default))
+            .unwrap_or(0.0);
+
+        Ok(Self {
+            device,
+            capabilities,
+            pan_target,
+            tilt_target,
+            zoom_target,
+        })
+    }
+
+    pub fn pan_target(&self) -> f32 {
+        self.pan_target
+    }
+
+    pub fn tilt_target(&self) -> f32 {
+        self.tilt_target
+    }
+
+    pub fn zoom_target(&self) -> f32 {
+        self.zoom_target
+    }
+
+    pub fn zoom_range(&self) -> Option<ControlRange> {
+        self.capabilities.zoom
+    }
+
+    pub fn pan_by(&mut self, amount: f32) -> Result<(), cameras::Error> {
+        self.set_axis_target(Axis::Pan, self.pan_target + amount)
+    }
+
+    pub fn tilt_by(&mut self, amount: f32) -> Result<(), cameras::Error> {
+        self.set_axis_target(Axis::Tilt, self.tilt_target + amount)
+    }
+
+    pub fn zoom_by(&mut self, amount: f32) -> Result<(), cameras::Error> {
+        self.set_axis_target(Axis::Zoom, self.zoom_target + amount)
+    }
+
+    pub fn set_zoom(&mut self, value: f32) -> Result<(), cameras::Error> {
+        self.set_axis_target(Axis::Zoom, value)
+    }
+
+    pub fn center(&mut self) -> Result<(), cameras::Error> {
+        let controls = Controls {
+            pan: self.capabilities.pan.map(|range| range.default),
+            tilt: self.capabilities.tilt.map(|range| range.default),
+            ..Default::default()
+        };
+
+        cameras::apply_controls(&self.device, &controls)?;
+
+        if let Some(range) = self.capabilities.pan {
+            self.pan_target = range.default;
+        }
+
+        if let Some(range) = self.capabilities.tilt {
+            self.tilt_target = range.default;
+        }
+
+        Ok(())
+    }
+
+    pub fn wide(&mut self) -> Result<(), cameras::Error> {
+        let Some(range) = self.capabilities.zoom else {
+            return Ok(());
+        };
+
+        self.set_axis_target(Axis::Zoom, range.default)
+    }
+
+    fn set_axis_target(&mut self, axis: Axis, value: f32) -> Result<(), cameras::Error> {
+        let Some(range) = range_for_axis(&self.capabilities, axis) else {
+            return Ok(());
+        };
+
+        let value = snap_to_step(value.clamp(range.min, range.max), range);
+
+        let controls = match axis {
+            Axis::Pan => Controls {
+                pan: Some(value),
+                ..Default::default()
+            },
+            Axis::Tilt => Controls {
+                tilt: Some(value),
+                ..Default::default()
+            },
+            Axis::Zoom => Controls {
+                zoom: Some(value),
+                ..Default::default()
+            },
+        };
+
+        cameras::apply_controls(&self.device, &controls)?;
+
+        match axis {
+            Axis::Pan => self.pan_target = value,
+            Axis::Tilt => self.tilt_target = value,
+            Axis::Zoom => self.zoom_target = value,
+        }
+
+        Ok(())
+    }
+}
+
 pub fn run_console(device: &Device) -> Result<(), Box<dyn Error>> {
     println!();
     println!("BareEye PTZ test console");

@@ -35,9 +35,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
+    let ptz = camera::ptz::ManualController::new(eagleeye.clone())?;
     let (camera, preview_info) = camera::open_preview(eagleeye)?;
 
-    app::run(camera, preview_info)?;
+    app::run(camera, preview_info, ptz)?;
 
     Ok(())
 }

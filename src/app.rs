@@ -1,9 +1,14 @@
+use crate::camera::ptz::ManualController;
 use crate::camera::{PreviewInfo, StreamTelemetry};
 use eframe::egui;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-pub fn run(camera: cameras::Camera, info: PreviewInfo) -> eframe::Result<()> {
+pub fn run(
+    camera: cameras::Camera,
+    info: PreviewInfo,
+    ptz: ManualController,
+) -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
@@ -18,7 +23,7 @@ pub fn run(camera: cameras::Camera, info: PreviewInfo) -> eframe::Result<()> {
             let (stream, telemetry) =
                 spawn_camera_stream(camera, creation_context.egui_ctx.clone(), &info);
 
-            Ok(Box::new(BareEyeApp::new(stream, telemetry, info)))
+            Ok(Box::new(BareEyeApp::new(stream, telemetry, info, ptz)))
         }),
     )
 }
@@ -63,6 +68,8 @@ struct BareEyeApp {
     stream: Option<egui_cameras::Stream>,
     telemetry: Arc<Mutex<StreamTelemetry>>,
     info: PreviewInfo,
+    ptz: ManualController,
+    ptz_error: Option<String>,
     uploaded_frames: u64,
     measured_fps: f32,
     fps_window_frames: u64,
@@ -75,16 +82,26 @@ impl BareEyeApp {
         stream: egui_cameras::Stream,
         telemetry: Arc<Mutex<StreamTelemetry>>,
         info: PreviewInfo,
+        ptz: ManualController,
     ) -> Self {
         Self {
             stream: Some(stream),
             telemetry,
             info,
+            ptz,
+            ptz_error: None,
             uploaded_frames: 0,
             measured_fps: 0.0,
             fps_window_frames: 0,
             fps_window_started: Instant::now(),
             last_error: None,
+        }
+    }
+
+    fn record_ptz_result(&mut self, result: Result<(), cameras::Error>) {
+        match result {
+            Ok(()) => self.ptz_error = None,
+            Err(error) => self.ptz_error = Some(error.to_string()),
         }
     }
 }
@@ -173,6 +190,78 @@ impl eframe::App for BareEyeApp {
 
                 ui.label(format!("Timing gaps: {}", telemetry.timing_anomalies));
             });
+
+            ui.separator();
+
+            ui.horizontal(|ui| {
+                ui.strong("PTZ");
+
+                if ui.button("←").clicked() {
+                    let result = self.ptz.pan_by(-10.0);
+                    self.record_ptz_result(result);
+                }
+
+                if ui.button("→").clicked() {
+                    let result = self.ptz.pan_by(10.0);
+                    self.record_ptz_result(result);
+                }
+
+                if ui.button("↑").clicked() {
+                    let result = self.ptz.tilt_by(5.0);
+                    self.record_ptz_result(result);
+                }
+
+                if ui.button("↓").clicked() {
+                    let result = self.ptz.tilt_by(-5.0);
+                    self.record_ptz_result(result);
+                }
+
+                if ui.button("Center").clicked() {
+                    let result = self.ptz.center();
+                    self.record_ptz_result(result);
+                }
+
+                ui.separator();
+
+                ui.label(format!(
+                    "Pan {:.0}°  Tilt {:.0}°",
+                    self.ptz.pan_target(),
+                    self.ptz.tilt_target()
+                ));
+            });
+
+            ui.horizontal(|ui| {
+                if ui.button("Zoom -").clicked() {
+                    let result = self.ptz.zoom_by(-400.0);
+                    self.record_ptz_result(result);
+                }
+
+                if ui.button("Zoom +").clicked() {
+                    let result = self.ptz.zoom_by(400.0);
+                    self.record_ptz_result(result);
+                }
+
+                if ui.button("Wide").clicked() {
+                    let result = self.ptz.wide();
+                    self.record_ptz_result(result);
+                }
+
+                if let Some(range) = self.ptz.zoom_range() {
+                    let mut zoom = self.ptz.zoom_target();
+
+                    if ui
+                        .add(egui::Slider::new(&mut zoom, range.min..=range.max).text("Zoom"))
+                        .changed()
+                    {
+                        let result = self.ptz.set_zoom(zoom);
+                        self.record_ptz_result(result);
+                    }
+                }
+            });
+
+            if let Some(error) = &self.ptz_error {
+                ui.colored_label(egui::Color32::RED, format!("PTZ error: {error}"));
+            }
 
             if let Some(error) = &self.last_error {
                 ui.colored_label(egui::Color32::RED, format!("Camera frame error: {error}"));
