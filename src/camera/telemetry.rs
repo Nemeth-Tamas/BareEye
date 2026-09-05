@@ -7,6 +7,8 @@ const TIMING_GAP_THRESHOLD: Duration = Duration::from_millis(80);
 pub struct StreamTelemetrySnapshot {
     pub arrived_frames: u64,
     pub arrival_fps: f32,
+    pub mjpeg_average_kib: f32,
+    pub mjpeg_peak_kib: f32,
     pub dimension_anomalies: u64,
     pub format_anomalies: u64,
     pub timing_anomalies: u64,
@@ -20,6 +22,10 @@ pub struct StreamTelemetry {
     arrival_fps: f32,
     fps_window_frames: u64,
     fps_window_started: Instant,
+    byte_window_total: u64,
+    byte_window_peak: u64,
+    mjpeg_average_kib: f32,
+    mjpeg_peak_kib: f32,
     dimension_anomalies: u64,
     format_anomalies: u64,
     timing_anomalies: u64,
@@ -40,6 +46,10 @@ impl StreamTelemetry {
             arrival_fps: 0.0,
             fps_window_frames: 0,
             fps_window_started: Instant::now(),
+            byte_window_total: 0,
+            byte_window_peak: 0,
+            mjpeg_average_kib: 0.0,
+            mjpeg_peak_kib: 0.0,
             dimension_anomalies: 0,
             format_anomalies: 0,
             timing_anomalies: 0,
@@ -50,6 +60,10 @@ impl StreamTelemetry {
     pub fn observe(&mut self, frame: &Frame) {
         self.arrived_frames += 1;
         self.fps_window_frames += 1;
+
+        let frame_bytes = frame.plane_primary.len() as u64;
+        self.byte_window_total += frame_bytes;
+        self.byte_window_peak = self.byte_window_peak.max(frame_bytes);
 
         if frame.width != self.expected_width || frame.height != self.expected_height {
             self.dimension_anomalies += 1;
@@ -74,7 +88,16 @@ impl StreamTelemetry {
         if elapsed.as_secs_f32() >= 1.0 {
             self.arrival_fps = self.fps_window_frames as f32 / elapsed.as_secs_f32();
 
+            if self.fps_window_frames > 0 {
+                self.mjpeg_average_kib =
+                    self.byte_window_total as f32 / self.fps_window_frames as f32 / 1024.0;
+
+                self.mjpeg_peak_kib = self.byte_window_peak as f32 / 1024.0;
+            }
+
             self.fps_window_frames = 0;
+            self.byte_window_total = 0;
+            self.byte_window_peak = 0;
             self.fps_window_started = Instant::now();
         }
     }
@@ -83,6 +106,8 @@ impl StreamTelemetry {
         StreamTelemetrySnapshot {
             arrived_frames: self.arrived_frames,
             arrival_fps: self.arrival_fps,
+            mjpeg_average_kib: self.mjpeg_average_kib,
+            mjpeg_peak_kib: self.mjpeg_peak_kib,
             dimension_anomalies: self.dimension_anomalies,
             format_anomalies: self.format_anomalies,
             timing_anomalies: self.timing_anomalies,

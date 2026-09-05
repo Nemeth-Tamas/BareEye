@@ -4,6 +4,9 @@ use eframe::egui;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+const SLOW_TEXTURE_UPDATE: Duration = Duration::from_millis(33);
+const SLOW_UI_GAP: Duration = Duration::from_millis(50);
+
 pub fn run(
     camera: cameras::Camera,
     info: PreviewInfo,
@@ -70,7 +73,13 @@ struct BareEyeApp {
     info: PreviewInfo,
     ptz: ManualController,
     ptz_error: Option<String>,
-    ptz_refresh_due: Option<Instant>,
+    last_ui_started: Instant,
+    ui_gap_ms: f32,
+    ui_gap_peak_ms: f32,
+    slow_ui_gaps: u64,
+    texture_update_ms: f32,
+    texture_update_peak_ms: f32,
+    slow_texture_updates: u64,
     uploaded_frames: u64,
     measured_fps: f32,
     fps_window_frames: u64,
@@ -91,7 +100,13 @@ impl BareEyeApp {
             info,
             ptz,
             ptz_error: None,
-            ptz_refresh_due: None,
+            last_ui_started: Instant::now(),
+            ui_gap_ms: 0.0,
+            ui_gap_peak_ms: 0.0,
+            slow_ui_gaps: 0,
+            texture_update_ms: 0.0,
+            texture_update_peak_ms: 0.0,
+            slow_texture_updates: 0,
             uploaded_frames: 0,
             measured_fps: 0.0,
             fps_window_frames: 0,
@@ -102,13 +117,8 @@ impl BareEyeApp {
 
     fn record_ptz_result(&mut self, result: Result<(), cameras::Error>) {
         match result {
-            Ok(()) => {
-                self.ptz_error = None;
-                self.ptz_refresh_due = Some(Instant::now() + Duration::from_millis(750));
-            }
-            Err(error) => {
-                self.ptz_error = Some(error.to_string());
-            }
+            Ok(()) => self.ptz_error = None,
+            Err(error) => self.ptz_error = Some(error.to_string()),
         }
     }
 }
@@ -124,9 +134,32 @@ impl eframe::App for BareEyeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        let ui_started = Instant::now();
+        let ui_gap = ui_started.duration_since(self.last_ui_started);
+        self.last_ui_started = ui_started;
+
+        self.ui_gap_ms = ui_gap.as_secs_f32() * 1000.0;
+        self.ui_gap_peak_ms = self.ui_gap_peak_ms.max(self.ui_gap_ms);
+
+        if ui_gap >= SLOW_UI_GAP {
+            self.slow_ui_gaps += 1;
+        }
+
         if let Some(stream) = self.stream.as_mut() {
-            match egui_cameras::update_texture(stream, &ctx) {
+            let texture_started = Instant::now();
+            let update_result = egui_cameras::update_texture(stream, &ctx);
+            let texture_elapsed = texture_started.elapsed();
+
+            match update_result {
                 Ok(true) => {
+                    self.texture_update_ms = texture_elapsed.as_secs_f32() * 1000.0;
+                    self.texture_update_peak_ms =
+                        self.texture_update_peak_ms.max(self.texture_update_ms);
+
+                    if texture_elapsed >= SLOW_TEXTURE_UPDATE {
+                        self.slow_texture_updates += 1;
+                    }
+
                     self.uploaded_frames += 1;
                     self.fps_window_frames += 1;
                     self.last_error = None;
@@ -144,18 +177,6 @@ impl eframe::App for BareEyeApp {
                 Err(error) => {
                     self.last_error = Some(error.to_string());
                 }
-            }
-        }
-
-        if self
-            .ptz_refresh_due
-            .is_some_and(|due| Instant::now() >= due)
-        {
-            self.ptz_refresh_due = None;
-
-            match self.ptz.refresh_actual() {
-                Ok(()) => self.ptz_error = None,
-                Err(error) => self.ptz_error = Some(error.to_string()),
             }
         }
 
@@ -217,6 +238,38 @@ impl eframe::App for BareEyeApp {
                 ui.label(format!("Timing gaps: {}", telemetry.timing_anomalies));
             });
 
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "MJPEG: {:.0} KiB avg / {:.0} KiB peak",
+                    telemetry.mjpeg_average_kib, telemetry.mjpeg_peak_kib
+                ));
+
+                ui.separator();
+
+                ui.label(format!(
+                    "Decode/upload: {:.1} ms / {:.1} ms peak",
+                    self.texture_update_ms, self.texture_update_peak_ms
+                ));
+
+                ui.separator();
+
+                ui.label(format!(
+                    "Slow decode/uploads: {}",
+                    self.slow_texture_updates
+                ));
+
+                ui.separator();
+
+                ui.label(format!(
+                    "UI gap: {:.1} ms / {:.1} ms peak",
+                    self.ui_gap_ms, self.ui_gap_peak_ms
+                ));
+
+                ui.separator();
+
+                ui.label(format!("Slow UI gaps: {}", self.slow_ui_gaps));
+            });
+
             ui.separator();
 
             ui.horizontal(|ui| {
@@ -244,6 +297,11 @@ impl eframe::App for BareEyeApp {
 
                 if ui.button("Center").clicked() {
                     let result = self.ptz.center();
+                    self.record_ptz_result(result);
+                }
+
+                if ui.button("Read position").clicked() {
+                    let result = self.ptz.refresh_actual();
                     self.record_ptz_result(result);
                 }
             });
