@@ -70,7 +70,7 @@ struct BareEyeApp {
     info: PreviewInfo,
     ptz: ManualController,
     ptz_error: Option<String>,
-    last_ptz_poll: Instant,
+    ptz_refresh_due: Option<Instant>,
     uploaded_frames: u64,
     measured_fps: f32,
     fps_window_frames: u64,
@@ -91,7 +91,7 @@ impl BareEyeApp {
             info,
             ptz,
             ptz_error: None,
-            last_ptz_poll: Instant::now(),
+            ptz_refresh_due: None,
             uploaded_frames: 0,
             measured_fps: 0.0,
             fps_window_frames: 0,
@@ -102,8 +102,13 @@ impl BareEyeApp {
 
     fn record_ptz_result(&mut self, result: Result<(), cameras::Error>) {
         match result {
-            Ok(()) => self.ptz_error = None,
-            Err(error) => self.ptz_error = Some(error.to_string()),
+            Ok(()) => {
+                self.ptz_error = None;
+                self.ptz_refresh_due = Some(Instant::now() + Duration::from_millis(750));
+            }
+            Err(error) => {
+                self.ptz_error = Some(error.to_string());
+            }
         }
     }
 }
@@ -142,10 +147,16 @@ impl eframe::App for BareEyeApp {
             }
         }
 
-        if self.last_ptz_poll.elapsed() >= Duration::from_millis(250) {
-            let result = self.ptz.refresh_actual();
-            self.record_ptz_result(result);
-            self.last_ptz_poll = Instant::now();
+        if self
+            .ptz_refresh_due
+            .is_some_and(|due| Instant::now() >= due)
+        {
+            self.ptz_refresh_due = None;
+
+            match self.ptz.refresh_actual() {
+                Ok(()) => self.ptz_error = None,
+                Err(error) => self.ptz_error = Some(error.to_string()),
+            }
         }
 
         let telemetry = self
@@ -247,7 +258,7 @@ impl eframe::App for BareEyeApp {
                 ui.separator();
 
                 ui.label(format!(
-                    "Actual: Pan {}  Tilt {}",
+                    "Last read: Pan {}  Tilt {}",
                     format_position(self.ptz.actual_pan()),
                     format_position(self.ptz.actual_tilt())
                 ));
@@ -286,7 +297,7 @@ impl eframe::App for BareEyeApp {
                 ui.separator();
 
                 ui.label(format!(
-                    "Actual zoom: {}",
+                    "Last read zoom: {}",
                     format_position(self.ptz.actual_zoom())
                 ));
             });
