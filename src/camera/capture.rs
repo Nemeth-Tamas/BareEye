@@ -18,7 +18,7 @@ pub fn open_preview(device: &Device) -> Result<(Camera, PreviewInfo), Box<dyn Er
             height: 1080,
         },
         framerate: 30,
-        pixel_format: PixelFormat::Bgra8,
+        pixel_format: PixelFormat::Mjpeg,
     };
 
     let selected = cameras::best_format(&capabilities, &requested)
@@ -48,7 +48,7 @@ pub fn open_preview(device: &Device) -> Result<(Camera, PreviewInfo), Box<dyn Er
     println!();
     println!("Opening BareEye preview");
     println!("-----------------------");
-    println!("Requested: 1920x1080 @ 30 FPS, BGRA8");
+    println!("Requested: 1920x1080 @ 30 FPS, MJPEG");
     println!(
         "Selected:  {}x{} @ {} FPS, {}",
         info.width, info.height, info.framerate, info.pixel_format

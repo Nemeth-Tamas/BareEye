@@ -1,6 +1,5 @@
 use crate::camera::PreviewInfo;
 use eframe::egui;
-use std::time::Duration;
 
 pub fn run(camera: cameras::Camera, info: PreviewInfo) -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
@@ -10,13 +9,35 @@ pub fn run(camera: cameras::Camera, info: PreviewInfo) -> eframe::Result<()> {
         ..Default::default()
     };
 
-    let stream = egui_cameras::spawn(camera);
-
     eframe::run_native(
         "BareEye",
         native_options,
-        Box::new(move |_creation_context| Ok(Box::new(BareEyeApp::new(stream, info)))),
+        Box::new(move |creation_context| {
+            let stream = spawn_camera_stream(camera, creation_context.egui_ctx.clone());
+
+            Ok(Box::new(BareEyeApp::new(stream, info)))
+        }),
     )
+}
+
+fn spawn_camera_stream(
+    camera: cameras::Camera,
+    repaint_context: egui::Context,
+) -> egui_cameras::Stream {
+    let sink = egui_cameras::Sink::default();
+    let pump_sink = sink.clone();
+
+    let pump = cameras::pump::spawn(camera, move |frame| {
+        egui_cameras::publish_frame(&pump_sink, frame);
+        repaint_context.request_repaint();
+    });
+
+    egui_cameras::Stream {
+        pump,
+        sink,
+        texture: None,
+        name: "bareeye-camera".to_owned(),
+    }
 }
 
 struct BareEyeApp {
@@ -98,8 +119,6 @@ impl eframe::App for BareEyeApp {
                 });
             }
         });
-
-        ctx.request_repaint_after(Duration::from_millis(16));
     }
 }
 

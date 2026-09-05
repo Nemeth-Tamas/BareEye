@@ -4,7 +4,7 @@
 
 * [x] Enumerate Windows video capture devices
 * [ ] Identify the Polycom EagleEye IV reliably
-* [ ] Open a live 1080p video stream
+* [x] Open a live 1080p video stream
 * [x] Enumerate supported camera-control properties
 * [x] Read pan, tilt, zoom, and focus ranges
 * [x] Read current pan, tilt, and zoom positions where supported
@@ -14,7 +14,7 @@
 
 ## 2. Application foundation
 
-* [ ] Create native Windows application window
+* [x] Create native Windows application window
 * [ ] Display the live camera feed with low latency
 * [ ] Add GPU-efficient frame presentation
 * [ ] Add camera status and PTZ diagnostics
