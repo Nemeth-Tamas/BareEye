@@ -9,6 +9,7 @@ const RAW_FRAME_QUEUE_CAPACITY: usize = 4;
 const PREVIEW_QUEUE_CAPACITY: usize = 2;
 const SLOW_DECODE: Duration = Duration::from_millis(33);
 const SLOW_TEXTURE_UPDATE: Duration = Duration::from_millis(33);
+const SLOW_DISPLAY_GAP: Duration = Duration::from_millis(45);
 const SLOW_UI_GAP: Duration = Duration::from_millis(50);
 
 pub fn run(
@@ -35,11 +36,13 @@ pub fn run(
     )
 }
 
-#[derive(Copy, Clone, Default)]
+#[derive(Clone, Default)]
 struct PreviewWorkerStats {
     decode_ms: f32,
     decode_peak_ms: f32,
     slow_decodes: u64,
+    decode_errors: u64,
+    last_decode_error: Option<String>,
     raw_queue_drops: u64,
     queue_drops: u64,
 }
@@ -118,10 +121,10 @@ impl PreviewStream {
     }
 
     fn worker_stats(&self) -> PreviewWorkerStats {
-        *self
-            .worker_stats
+        self.worker_stats
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -165,6 +168,11 @@ fn spawn_camera_stream(
 
                     if decode_elapsed >= SLOW_DECODE {
                         stats.slow_decodes += 1;
+                    }
+
+                    if let Err(error) = &decoded {
+                        stats.decode_errors += 1;
+                        stats.last_decode_error = Some(error.clone());
                     }
                 }
 
@@ -238,6 +246,10 @@ struct BareEyeApp {
     texture_update_ms: f32,
     texture_update_peak_ms: f32,
     slow_texture_updates: u64,
+    last_displayed_at: Option<Instant>,
+    display_gap_ms: f32,
+    display_gap_peak_ms: f32,
+    slow_display_gaps: u64,
     uploaded_frames: u64,
     measured_fps: f32,
     fps_window_frames: u64,
@@ -265,6 +277,10 @@ impl BareEyeApp {
             texture_update_ms: 0.0,
             texture_update_peak_ms: 0.0,
             slow_texture_updates: 0,
+            last_displayed_at: None,
+            display_gap_ms: 0.0,
+            display_gap_peak_ms: 0.0,
+            slow_display_gaps: 0,
             uploaded_frames: 0,
             measured_fps: 0.0,
             fps_window_frames: 0,
@@ -317,6 +333,22 @@ impl eframe::App for BareEyeApp {
                     if texture_elapsed >= SLOW_TEXTURE_UPDATE {
                         self.slow_texture_updates += 1;
                     }
+
+                    let displayed_now = Instant::now();
+
+                    if let Some(previous) = self.last_displayed_at {
+                        let display_gap = displayed_now.duration_since(previous);
+
+                        self.display_gap_ms = display_gap.as_secs_f32() * 1000.0;
+                        self.display_gap_peak_ms =
+                            self.display_gap_peak_ms.max(self.display_gap_ms);
+
+                        if display_gap >= SLOW_DISPLAY_GAP {
+                            self.slow_display_gaps += 1;
+                        }
+                    }
+
+                    self.last_displayed_at = Some(displayed_now);
 
                     self.uploaded_frames += 1;
                     self.fps_window_frames += 1;
@@ -449,6 +481,21 @@ impl eframe::App for BareEyeApp {
 
                 ui.separator();
 
+                ui.label(format!("Decode errors: {}", worker_stats.decode_errors));
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "Display gap: {:.1} ms / {:.1} ms peak",
+                    self.display_gap_ms, self.display_gap_peak_ms
+                ));
+
+                ui.separator();
+
+                ui.label(format!("Slow display gaps: {}", self.slow_display_gaps));
+
+                ui.separator();
+
                 ui.label(format!(
                     "UI gap: {:.1} ms / {:.1} ms peak",
                     self.ui_gap_ms, self.ui_gap_peak_ms
@@ -458,6 +505,13 @@ impl eframe::App for BareEyeApp {
 
                 ui.label(format!("Slow UI gaps: {}", self.slow_ui_gaps));
             });
+
+            if let Some(error) = &worker_stats.last_decode_error {
+                ui.colored_label(
+                    egui::Color32::RED,
+                    format!("Last JPEG decode error: {error}"),
+                );
+            }
 
             ui.separator();
 
