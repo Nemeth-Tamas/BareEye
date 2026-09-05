@@ -2,7 +2,7 @@ use crate::camera::ptz::ManualController;
 use crate::camera::{PreviewInfo, StreamTelemetry};
 use eframe::egui;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub fn run(
     camera: cameras::Camera,
@@ -70,6 +70,7 @@ struct BareEyeApp {
     info: PreviewInfo,
     ptz: ManualController,
     ptz_error: Option<String>,
+    last_ptz_poll: Instant,
     uploaded_frames: u64,
     measured_fps: f32,
     fps_window_frames: u64,
@@ -90,6 +91,7 @@ impl BareEyeApp {
             info,
             ptz,
             ptz_error: None,
+            last_ptz_poll: Instant::now(),
             uploaded_frames: 0,
             measured_fps: 0.0,
             fps_window_frames: 0,
@@ -106,7 +108,12 @@ impl BareEyeApp {
     }
 }
 
-impl eframe::App for BareEyeApp {
+fn format_position(value: Option<f32>) -> String {
+    match value {
+        Some(value) => format!("{value:.0}"),
+        None => "n/a".to_owned(),
+    }
+}
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
@@ -131,6 +138,12 @@ impl eframe::App for BareEyeApp {
                     self.last_error = Some(error.to_string());
                 }
             }
+        }
+
+        if self.last_ptz_poll.elapsed() >= Duration::from_millis(250) {
+            let result = self.ptz.refresh_actual();
+            self.record_ptz_result(result);
+            self.last_ptz_poll = Instant::now();
         }
 
         let telemetry = self
@@ -196,22 +209,22 @@ impl eframe::App for BareEyeApp {
             ui.horizontal(|ui| {
                 ui.strong("PTZ");
 
-                if ui.button("←").clicked() {
+                if ui.button("Left").clicked() {
                     let result = self.ptz.pan_by(-10.0);
                     self.record_ptz_result(result);
                 }
 
-                if ui.button("→").clicked() {
+                if ui.button("Right").clicked() {
                     let result = self.ptz.pan_by(10.0);
                     self.record_ptz_result(result);
                 }
 
-                if ui.button("↑").clicked() {
+                if ui.button("Up").clicked() {
                     let result = self.ptz.tilt_by(5.0);
                     self.record_ptz_result(result);
                 }
 
-                if ui.button("↓").clicked() {
+                if ui.button("Down").clicked() {
                     let result = self.ptz.tilt_by(-5.0);
                     self.record_ptz_result(result);
                 }
@@ -220,13 +233,21 @@ impl eframe::App for BareEyeApp {
                     let result = self.ptz.center();
                     self.record_ptz_result(result);
                 }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "Target: Pan {:.0}  Tilt {:.0}",
+                    self.ptz.pan_target(),
+                    self.ptz.tilt_target()
+                ));
 
                 ui.separator();
 
                 ui.label(format!(
-                    "Pan {:.0}°  Tilt {:.0}°",
-                    self.ptz.pan_target(),
-                    self.ptz.tilt_target()
+                    "Actual: Pan {}  Tilt {}",
+                    format_position(self.ptz.actual_pan()),
+                    format_position(self.ptz.actual_tilt())
                 ));
             });
 
@@ -250,13 +271,20 @@ impl eframe::App for BareEyeApp {
                     let mut zoom = self.ptz.zoom_target();
 
                     if ui
-                        .add(egui::Slider::new(&mut zoom, range.min..=range.max).text("Zoom"))
+                        .add(egui::Slider::new(&mut zoom, range.min..=range.max).text("Zoom target"))
                         .changed()
                     {
                         let result = self.ptz.set_zoom(zoom);
                         self.record_ptz_result(result);
                     }
                 }
+
+                ui.separator();
+
+                ui.label(format!(
+                    "Actual zoom: {}",
+                    format_position(self.ptz.actual_zoom())
+                ));
             });
 
             if let Some(error) = &self.ptz_error {
