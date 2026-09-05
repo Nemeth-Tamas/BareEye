@@ -1,5 +1,6 @@
-use crate::camera::PreviewInfo;
+use crate::camera::{PreviewInfo, StreamTelemetry};
 use eframe::egui;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 pub fn run(camera: cameras::Camera, info: PreviewInfo) -> eframe::Result<()> {
@@ -14,9 +15,10 @@ pub fn run(camera: cameras::Camera, info: PreviewInfo) -> eframe::Result<()> {
         "BareEye",
         native_options,
         Box::new(move |creation_context| {
-            let stream = spawn_camera_stream(camera, creation_context.egui_ctx.clone());
+            let (stream, telemetry) =
+                spawn_camera_stream(camera, creation_context.egui_ctx.clone(), &info);
 
-            Ok(Box::new(BareEyeApp::new(stream, info)))
+            Ok(Box::new(BareEyeApp::new(stream, telemetry, info)))
         }),
     )
 }
@@ -24,25 +26,42 @@ pub fn run(camera: cameras::Camera, info: PreviewInfo) -> eframe::Result<()> {
 fn spawn_camera_stream(
     camera: cameras::Camera,
     repaint_context: egui::Context,
-) -> egui_cameras::Stream {
+    info: &PreviewInfo,
+) -> (egui_cameras::Stream, Arc<Mutex<StreamTelemetry>>) {
     let sink = egui_cameras::Sink::default();
     let pump_sink = sink.clone();
 
+    let telemetry = Arc::new(Mutex::new(StreamTelemetry::new(
+        info.width,
+        info.height,
+        cameras::PixelFormat::Mjpeg,
+    )));
+    let pump_telemetry = Arc::clone(&telemetry);
+
     let pump = cameras::pump::spawn(camera, move |frame| {
+        pump_telemetry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .observe(&frame);
+
         egui_cameras::publish_frame(&pump_sink, frame);
         repaint_context.request_repaint();
     });
 
-    egui_cameras::Stream {
-        pump,
-        sink,
-        texture: None,
-        name: "bareeye-camera".to_owned(),
-    }
+    (
+        egui_cameras::Stream {
+            pump,
+            sink,
+            texture: None,
+            name: "bareeye-camera".to_owned(),
+        },
+        telemetry,
+    )
 }
 
 struct BareEyeApp {
     stream: Option<egui_cameras::Stream>,
+    telemetry: Arc<Mutex<StreamTelemetry>>,
     info: PreviewInfo,
     uploaded_frames: u64,
     measured_fps: f32,
@@ -52,9 +71,14 @@ struct BareEyeApp {
 }
 
 impl BareEyeApp {
-    fn new(stream: egui_cameras::Stream, info: PreviewInfo) -> Self {
+    fn new(
+        stream: egui_cameras::Stream,
+        telemetry: Arc<Mutex<StreamTelemetry>>,
+        info: PreviewInfo,
+    ) -> Self {
         Self {
             stream: Some(stream),
+            telemetry,
             info,
             uploaded_frames: 0,
             measured_fps: 0.0,
@@ -92,6 +116,16 @@ impl eframe::App for BareEyeApp {
             }
         }
 
+        let telemetry = self
+            .telemetry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .snapshot();
+
+        let not_displayed = telemetry
+            .arrived_frames
+            .saturating_sub(self.uploaded_frames);
+
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.strong("BareEye");
@@ -109,11 +143,35 @@ impl eframe::App for BareEyeApp {
 
                 ui.separator();
 
-                ui.label(format!("Measured: {:.1} FPS", self.measured_fps));
+                ui.label(format!("Camera: {:.1} FPS", telemetry.arrival_fps));
 
                 ui.separator();
 
-                ui.label(format!("Frames: {}", self.uploaded_frames));
+                ui.label(format!("Display: {:.1} FPS", self.measured_fps));
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(format!("Arrived: {}", telemetry.arrived_frames));
+
+                ui.separator();
+
+                ui.label(format!("Displayed: {}", self.uploaded_frames));
+
+                ui.separator();
+
+                ui.label(format!("Not displayed: {not_displayed}"));
+
+                ui.separator();
+
+                ui.label(format!("Size anomalies: {}", telemetry.dimension_anomalies));
+
+                ui.separator();
+
+                ui.label(format!("Format anomalies: {}", telemetry.format_anomalies));
+
+                ui.separator();
+
+                ui.label(format!("Timing gaps: {}", telemetry.timing_anomalies));
             });
 
             if let Some(error) = &self.last_error {
