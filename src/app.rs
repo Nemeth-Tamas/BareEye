@@ -54,7 +54,7 @@ impl eframe::App for BareEyeApp {
             }
         }
 
-        egui::CentralPanel::default().show(ui, |ui| {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.strong("BareEye");
 
