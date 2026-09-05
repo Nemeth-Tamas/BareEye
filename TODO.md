@@ -15,7 +15,7 @@
 ## 2. Application foundation
 
 * [x] Create native Windows application window
-* [ ] Display the live camera feed with low latency
+* [x] Display the live camera feed with low latency
 * [ ] Add GPU-efficient frame presentation
 * [ ] Add camera status and PTZ diagnostics
 * [ ] Add mouse-controlled manual pan, tilt, and zoom

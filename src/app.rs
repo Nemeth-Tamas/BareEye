@@ -1,5 +1,6 @@
 use crate::camera::PreviewInfo;
 use eframe::egui;
+use std::time::Instant;
 
 pub fn run(camera: cameras::Camera, info: PreviewInfo) -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
@@ -44,6 +45,9 @@ struct BareEyeApp {
     stream: Option<egui_cameras::Stream>,
     info: PreviewInfo,
     uploaded_frames: u64,
+    measured_fps: f32,
+    fps_window_frames: u64,
+    fps_window_started: Instant,
     last_error: Option<String>,
 }
 
@@ -53,6 +57,9 @@ impl BareEyeApp {
             stream: Some(stream),
             info,
             uploaded_frames: 0,
+            measured_fps: 0.0,
+            fps_window_frames: 0,
+            fps_window_started: Instant::now(),
             last_error: None,
         }
     }
@@ -66,7 +73,17 @@ impl eframe::App for BareEyeApp {
             match egui_cameras::update_texture(stream, &ctx) {
                 Ok(true) => {
                     self.uploaded_frames += 1;
+                    self.fps_window_frames += 1;
                     self.last_error = None;
+
+                    let elapsed = self.fps_window_started.elapsed();
+
+                    if elapsed.as_secs_f32() >= 1.0 {
+                        self.measured_fps = self.fps_window_frames as f32 / elapsed.as_secs_f32();
+
+                        self.fps_window_frames = 0;
+                        self.fps_window_started = Instant::now();
+                    }
                 }
                 Ok(false) => {}
                 Err(error) => {
@@ -89,6 +106,10 @@ impl eframe::App for BareEyeApp {
                 ui.separator();
 
                 ui.label(&self.info.pixel_format);
+
+                ui.separator();
+
+                ui.label(format!("Measured: {:.1} FPS", self.measured_fps));
 
                 ui.separator();
 
