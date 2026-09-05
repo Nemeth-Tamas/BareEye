@@ -140,7 +140,8 @@ fn set_axis(device: &Device, axis: Axis, value: f32) -> Result<(), cameras::Erro
 
     cameras::apply_controls(device, &controls)?;
 
-    println!("{} set to {}.", axis.label(), value);
+    println!("{} commanded to {}.", axis.label(), value);
+    wait_for_axis(device, axis, value, range.step.max(1.0))?;
     print_state(device)?;
 
     Ok(())
@@ -148,16 +149,27 @@ fn set_axis(device: &Device, axis: Axis, value: f32) -> Result<(), cameras::Erro
 
 fn center_camera(device: &Device) -> Result<(), cameras::Error> {
     let capabilities = cameras::control_capabilities(device)?;
+    let pan_range = capabilities.pan;
+    let tilt_range = capabilities.tilt;
 
     let controls = Controls {
-        pan: capabilities.pan.map(|range| range.default),
-        tilt: capabilities.tilt.map(|range| range.default),
+        pan: pan_range.map(|range| range.default),
+        tilt: tilt_range.map(|range| range.default),
         ..Default::default()
     };
 
     cameras::apply_controls(device, &controls)?;
 
-    println!("Pan and tilt returned to their default positions.");
+    println!("Pan and tilt commanded to their default positions.");
+
+    if let Some(range) = pan_range {
+        wait_for_axis(device, Axis::Pan, range.default, range.step.max(1.0))?;
+    }
+
+    if let Some(range) = tilt_range {
+        wait_for_axis(device, Axis::Tilt, range.default, range.step.max(1.0))?;
+    }
+
     print_state(device)?;
 
     Ok(())
@@ -172,6 +184,53 @@ fn set_zoom_default(device: &Device) -> Result<(), cameras::Error> {
     };
 
     set_axis(device, Axis::Zoom, range.default)
+}
+
+fn wait_for_axis(
+    device: &Device,
+    axis: Axis,
+    target: f32,
+    tolerance: f32,
+) -> Result<(), cameras::Error> {
+    let started = Instant::now();
+    let mut last_position = None;
+
+    loop {
+        let controls = cameras::read_controls(device)?;
+
+        let position = match axis {
+            Axis::Pan => controls.pan,
+            Axis::Tilt => controls.tilt,
+            Axis::Zoom => controls.zoom,
+        };
+
+        let Some(position) = position else {
+            println!("{} position is no longer readable.", axis.label());
+            return Ok(());
+        };
+
+        if last_position != Some(position) {
+            println!("    {} position: {}", axis.label(), position);
+            last_position = Some(position);
+        }
+
+        if (position - target).abs() <= tolerance {
+            println!("{} reached {}.", axis.label(), position);
+            return Ok(());
+        }
+
+        if started.elapsed() >= MOVE_TIMEOUT {
+            println!(
+                "{} movement timed out at {} while targeting {}.",
+                axis.label(),
+                position,
+                target
+            );
+            return Ok(());
+        }
+
+        thread::sleep(MOVE_POLL_INTERVAL);
+    }
 }
 
 fn range_for_axis(capabilities: &ControlCapabilities, axis: Axis) -> Option<ControlRange> {
