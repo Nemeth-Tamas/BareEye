@@ -24,23 +24,37 @@ pub fn open_preview(device: &Device) -> Result<(Camera, PreviewInfo), Box<dyn Er
     let selected = cameras::best_format(&capabilities, &requested)
         .ok_or_else(|| io::Error::other("camera reported no usable video formats"))?;
 
+    let selected_framerate = if (requested.framerate as f64) >= selected.framerate_range.min
+        && (requested.framerate as f64) <= selected.framerate_range.max
+    {
+        requested.framerate
+    } else {
+        selected.framerate_range.max.round() as u32
+    };
+
     let info = PreviewInfo {
         width: selected.resolution.width,
         height: selected.resolution.height,
-        framerate: selected.framerate,
+        framerate: selected_framerate,
         pixel_format: format!("{:?}", selected.pixel_format),
+    };
+
+    let config = StreamConfig {
+        resolution: selected.resolution,
+        framerate: selected_framerate,
+        pixel_format: selected.pixel_format,
     };
 
     println!();
     println!("Opening BareEye preview");
     println!("-----------------------");
-    println!("Requested: 1920x1080 @ 30 FPS");
+    println!("Requested: 1920x1080 @ 30 FPS, BGRA8");
     println!(
         "Selected:  {}x{} @ {} FPS, {}",
         info.width, info.height, info.framerate, info.pixel_format
     );
 
-    let camera = cameras::open(device, selected)?;
+    let camera = cameras::open(device, config)?;
 
     Ok((camera, info))
 }

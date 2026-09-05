@@ -38,9 +38,11 @@ impl BareEyeApp {
 }
 
 impl eframe::App for BareEyeApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+
         if let Some(stream) = self.stream.as_mut() {
-            match egui_cameras::update_texture(stream, ctx) {
+            match egui_cameras::update_texture(stream, &ctx) {
                 Ok(true) => {
                     self.uploaded_frames += 1;
                     self.last_error = None;
@@ -52,7 +54,7 @@ impl eframe::App for BareEyeApp {
             }
         }
 
-        egui::TopBottomPanel::top("status_bar").show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.strong("BareEye");
 
@@ -75,9 +77,9 @@ impl eframe::App for BareEyeApp {
             if let Some(error) = &self.last_error {
                 ui.colored_label(egui::Color32::RED, format!("Camera frame error: {error}"));
             }
-        });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.separator();
+
             let Some(stream) = self.stream.as_ref() else {
                 ui.centered_and_justified(|ui| {
                     ui.label("Camera stream has stopped.");

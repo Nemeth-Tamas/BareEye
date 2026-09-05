@@ -5,5 +5,5 @@ edition = "2024"
 
 [dependencies]
 cameras = { version = "0.3.2", features = ["controls"] }
-eframe = "0.36.1"
+eframe = "=0.34.3"
 egui-cameras = "0.3.2"
