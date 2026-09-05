@@ -114,6 +114,8 @@ fn format_position(value: Option<f32>) -> String {
         None => "n/a".to_owned(),
     }
 }
+
+impl eframe::App for BareEyeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
@@ -271,7 +273,9 @@ fn format_position(value: Option<f32>) -> String {
                     let mut zoom = self.ptz.zoom_target();
 
                     if ui
-                        .add(egui::Slider::new(&mut zoom, range.min..=range.max).text("Zoom target"))
+                        .add(
+                            egui::Slider::new(&mut zoom, range.min..=range.max).text("Zoom target"),
+                        )
                         .changed()
                     {
                         let result = self.ptz.set_zoom(zoom);
