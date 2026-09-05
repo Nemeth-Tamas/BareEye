@@ -1,9 +1,12 @@
 use crate::camera::ptz::ManualController;
 use crate::camera::{PreviewInfo, StreamTelemetry};
 use eframe::egui;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+const PREVIEW_QUEUE_CAPACITY: usize = 2;
+const SLOW_DECODE: Duration = Duration::from_millis(33);
 const SLOW_TEXTURE_UPDATE: Duration = Duration::from_millis(33);
 const SLOW_UI_GAP: Duration = Duration::from_millis(50);
 
@@ -31,13 +34,97 @@ pub fn run(
     )
 }
 
+#[derive(Copy, Clone, Default)]
+struct PreviewWorkerStats {
+    decode_ms: f32,
+    decode_peak_ms: f32,
+    slow_decodes: u64,
+    queue_drops: u64,
+}
+
+struct PreviewStream {
+    pump: egui_cameras::Pump,
+    queue: Arc<Mutex<VecDeque<Result<egui::ColorImage, String>>>>,
+    worker_stats: Arc<Mutex<PreviewWorkerStats>>,
+    texture: Option<egui::TextureHandle>,
+    name: String,
+}
+
+impl PreviewStream {
+    fn update_texture(&mut self, ctx: &egui::Context) -> Result<bool, String> {
+        let next_image = self
+            .queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop_front();
+
+        let Some(image) = next_image else {
+            return Ok(false);
+        };
+
+        let image = image?;
+
+        match &mut self.texture {
+            Some(texture) => {
+                texture.set(image, egui::TextureOptions::LINEAR);
+            }
+            None => {
+                self.texture =
+                    Some(ctx.load_texture(&self.name, image, egui::TextureOptions::LINEAR));
+            }
+        }
+
+        let has_more = !self
+            .queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty();
+
+        if has_more {
+            ctx.request_repaint();
+        }
+
+        Ok(true)
+    }
+
+    fn show(&self, ui: &mut egui::Ui) {
+        let Some(texture) = &self.texture else {
+            return;
+        };
+
+        let aspect = texture.aspect_ratio();
+        let available = ui.available_size();
+        let width = available.x.min(available.y * aspect);
+        let height = width / aspect;
+
+        ui.image((texture.id(), egui::vec2(width, height)));
+    }
+
+    fn queue_depth(&self) -> usize {
+        self.queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
+    fn worker_stats(&self) -> PreviewWorkerStats {
+        *self
+            .worker_stats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 fn spawn_camera_stream(
     camera: cameras::Camera,
     repaint_context: egui::Context,
     info: &PreviewInfo,
-) -> (egui_cameras::Stream, Arc<Mutex<StreamTelemetry>>) {
-    let sink = egui_cameras::Sink::default();
-    let pump_sink = sink.clone();
+) -> (PreviewStream, Arc<Mutex<StreamTelemetry>>) {
+    let queue = Arc::new(Mutex::new(VecDeque::with_capacity(PREVIEW_QUEUE_CAPACITY)));
+    let pump_queue = Arc::clone(&queue);
+
+    let worker_stats = Arc::new(Mutex::new(PreviewWorkerStats::default()));
+    let pump_worker_stats = Arc::clone(&worker_stats);
 
     let telemetry = Arc::new(Mutex::new(StreamTelemetry::new(
         info.width,
@@ -52,14 +139,52 @@ fn spawn_camera_stream(
             .unwrap_or_else(PoisonError::into_inner)
             .observe(&frame);
 
-        egui_cameras::publish_frame(&pump_sink, frame);
+        let decode_started = Instant::now();
+        let decoded = egui_cameras::frame_to_color_image(&frame).map_err(|error| error.to_string());
+        let decode_elapsed = decode_started.elapsed();
+
+        {
+            let mut stats = pump_worker_stats
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+
+            stats.decode_ms = decode_elapsed.as_secs_f32() * 1000.0;
+            stats.decode_peak_ms = stats.decode_peak_ms.max(stats.decode_ms);
+
+            if decode_elapsed >= SLOW_DECODE {
+                stats.slow_decodes += 1;
+            }
+        }
+
+        let dropped = {
+            let mut queue = pump_queue.lock().unwrap_or_else(PoisonError::into_inner);
+
+            let dropped = queue.len() >= PREVIEW_QUEUE_CAPACITY;
+
+            if dropped {
+                queue.pop_front();
+            }
+
+            queue.push_back(decoded);
+
+            dropped
+        };
+
+        if dropped {
+            pump_worker_stats
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .queue_drops += 1;
+        }
+
         repaint_context.request_repaint();
     });
 
     (
-        egui_cameras::Stream {
+        PreviewStream {
             pump,
-            sink,
+            queue,
+            worker_stats,
             texture: None,
             name: "bareeye-camera".to_owned(),
         },
@@ -68,7 +193,7 @@ fn spawn_camera_stream(
 }
 
 struct BareEyeApp {
-    stream: Option<egui_cameras::Stream>,
+    stream: Option<PreviewStream>,
     telemetry: Arc<Mutex<StreamTelemetry>>,
     info: PreviewInfo,
     ptz: ManualController,
@@ -89,7 +214,7 @@ struct BareEyeApp {
 
 impl BareEyeApp {
     fn new(
-        stream: egui_cameras::Stream,
+        stream: PreviewStream,
         telemetry: Arc<Mutex<StreamTelemetry>>,
         info: PreviewInfo,
         ptz: ManualController,
@@ -147,7 +272,7 @@ impl eframe::App for BareEyeApp {
 
         if let Some(stream) = self.stream.as_mut() {
             let texture_started = Instant::now();
-            let update_result = egui_cameras::update_texture(stream, &ctx);
+            let update_result = stream.update_texture(&ctx);
             let texture_elapsed = texture_started.elapsed();
 
             match update_result {
@@ -175,7 +300,7 @@ impl eframe::App for BareEyeApp {
                 }
                 Ok(false) => {}
                 Err(error) => {
-                    self.last_error = Some(error.to_string());
+                    self.last_error = Some(error);
                 }
             }
         }
@@ -186,9 +311,19 @@ impl eframe::App for BareEyeApp {
             .unwrap_or_else(PoisonError::into_inner)
             .snapshot();
 
+        let buffered_frames = self
+            .stream
+            .as_ref()
+            .map_or(0, |stream| stream.queue_depth());
+
+        let worker_stats = self
+            .stream
+            .as_ref()
+            .map_or_else(PreviewWorkerStats::default, |stream| stream.worker_stats());
+
         let not_displayed = telemetry
             .arrived_frames
-            .saturating_sub(self.uploaded_frames);
+            .saturating_sub(self.uploaded_frames + buffered_frames as u64);
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.horizontal(|ui| {
@@ -247,16 +382,35 @@ impl eframe::App for BareEyeApp {
                 ui.separator();
 
                 ui.label(format!(
-                    "Decode/upload: {:.1} ms / {:.1} ms peak",
+                    "Decode: {:.1} ms / {:.1} ms peak",
+                    worker_stats.decode_ms, worker_stats.decode_peak_ms
+                ));
+
+                ui.separator();
+
+                ui.label(format!("Slow decodes: {}", worker_stats.slow_decodes));
+
+                ui.separator();
+
+                ui.label(format!(
+                    "Upload: {:.1} ms / {:.1} ms peak",
                     self.texture_update_ms, self.texture_update_peak_ms
                 ));
 
                 ui.separator();
 
+                ui.label(format!("Slow uploads: {}", self.slow_texture_updates));
+            });
+
+            ui.horizontal(|ui| {
                 ui.label(format!(
-                    "Slow decode/uploads: {}",
-                    self.slow_texture_updates
+                    "Buffered: {}/{}",
+                    buffered_frames, PREVIEW_QUEUE_CAPACITY
                 ));
+
+                ui.separator();
+
+                ui.label(format!("Queue drops: {}", worker_stats.queue_drops));
 
                 ui.separator();
 
@@ -390,7 +544,7 @@ impl eframe::App for BareEyeApp {
             };
 
             if stream.texture.is_some() {
-                egui_cameras::show(stream, ui);
+                stream.show(ui);
             } else {
                 ui.centered_and_justified(|ui| {
                     ui.horizontal(|ui| {
