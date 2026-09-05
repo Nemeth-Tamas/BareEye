@@ -30,6 +30,9 @@ pub struct ManualController {
     pan_target: f32,
     tilt_target: f32,
     zoom_target: f32,
+    actual_pan: Option<f32>,
+    actual_tilt: Option<f32>,
+    actual_zoom: Option<f32>,
 }
 
 impl ManualController {
@@ -58,6 +61,9 @@ impl ManualController {
             pan_target,
             tilt_target,
             zoom_target,
+            actual_pan: controls.pan,
+            actual_tilt: controls.tilt,
+            actual_zoom: controls.zoom,
         })
     }
 
@@ -71,6 +77,28 @@ impl ManualController {
 
     pub fn zoom_target(&self) -> f32 {
         self.zoom_target
+    }
+
+    pub fn actual_pan(&self) -> Option<f32> {
+        self.actual_pan
+    }
+
+    pub fn actual_tilt(&self) -> Option<f32> {
+        self.actual_tilt
+    }
+
+    pub fn actual_zoom(&self) -> Option<f32> {
+        self.actual_zoom
+    }
+
+    pub fn refresh_actual(&mut self) -> Result<(), cameras::Error> {
+        let controls = cameras::read_controls(&self.device)?;
+
+        self.actual_pan = controls.pan;
+        self.actual_tilt = controls.tilt;
+        self.actual_zoom = controls.zoom;
+
+        Ok(())
     }
 
     pub fn zoom_range(&self) -> Option<ControlRange> {
