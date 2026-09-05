@@ -2,12 +2,12 @@
 
 ## 1. Hardware foundation
 
-* [ ] Enumerate Windows video capture devices
+* [x] Enumerate Windows video capture devices
 * [ ] Identify the Polycom EagleEye IV reliably
 * [ ] Open a live 1080p video stream
-* [ ] Enumerate supported camera-control properties
-* [ ] Read pan, tilt, zoom, and focus ranges
-* [ ] Read current pan, tilt, and zoom positions where supported
+* [x] Enumerate supported camera-control properties
+* [x] Read pan, tilt, zoom, and focus ranges
+* [x] Read current pan, tilt, and zoom positions where supported
 * [ ] Implement absolute PTZ control
 * [ ] Investigate relative / velocity PTZ control support
 * [ ] Implement safe PTZ limit handling
