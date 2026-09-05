@@ -28,7 +28,7 @@ pub fn run_console(device: &Device) -> Result<(), Box<dyn Error>> {
     print_state(device)?;
 
     loop {
-        print!();
+        println!();
         print!("bareeye-ptz> ");
         io::stdout().flush()?;
 
