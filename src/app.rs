@@ -41,6 +41,8 @@ struct PreviewWorkerStats {
     decode_ms: f32,
     decode_peak_ms: f32,
     slow_decodes: u64,
+    decode_repairs: u64,
+    last_decode_repair: Option<String>,
     decode_errors: u64,
     last_decode_error: Option<String>,
     raw_queue_drops: u64,
@@ -128,6 +130,59 @@ impl PreviewStream {
     }
 }
 
+fn decode_preview_frame(
+    frame: &cameras::Frame,
+) -> (Result<egui::ColorImage, String>, Option<(usize, usize)>) {
+    match egui_cameras::frame_to_color_image(frame) {
+        Ok(image) => (Ok(image), None),
+        Err(first_error) => {
+            if frame.pixel_format != cameras::PixelFormat::Mjpeg {
+                return (Err(first_error.to_string()), None);
+            }
+
+            let data = frame.plane_primary.as_ref();
+
+            let Some(start) = data
+                .windows(2)
+                .position(|bytes| bytes[0] == 0xFF && bytes[1] == 0xD8)
+            else {
+                return (Err(first_error.to_string()), None);
+            };
+
+            let end = data[start + 2..]
+                .windows(2)
+                .position(|bytes| bytes[0] == 0xFF && bytes[1] == 0xD9)
+                .map(|offset| start + 2 + offset + 2)
+                .unwrap_or(data.len());
+
+            if start == 0 && end == data.len() {
+                return (Err(first_error.to_string()), None);
+            }
+
+            if start >= end {
+                return (Err(first_error.to_string()), None);
+            }
+
+            let mut repaired = frame.clone();
+            repaired.plane_primary = frame.plane_primary.slice(start..end);
+
+            match egui_cameras::frame_to_color_image(&repaired) {
+                Ok(image) => {
+                    let trailing = data.len().saturating_sub(end);
+
+                    (Ok(image), Some((start, trailing)))
+                }
+                Err(repair_error) => (
+                    Err(format!(
+                        "{first_error}; MJPEG repair attempt also failed: {repair_error}"
+                    )),
+                    None,
+                ),
+            }
+        }
+    }
+}
+
 fn spawn_camera_stream(
     camera: cameras::Camera,
     repaint_context: egui::Context,
@@ -154,8 +209,7 @@ fn spawn_camera_stream(
         .spawn(move || {
             while let Ok(frame) = raw_receiver.recv() {
                 let decode_started = Instant::now();
-                let decoded =
-                    egui_cameras::frame_to_color_image(&frame).map_err(|error| error.to_string());
+                let (decoded, repair) = decode_preview_frame(&frame);
                 let decode_elapsed = decode_started.elapsed();
 
                 {
@@ -170,11 +224,26 @@ fn spawn_camera_stream(
                         stats.slow_decodes += 1;
                     }
 
+                    if let Some((leading, trailing)) = repair {
+                        stats.decode_repairs += 1;
+                        stats.last_decode_repair = Some(format!(
+                            "trimmed {leading} leading byte(s) and {trailing} trailing byte(s)"
+                        ));
+                    }
+
                     if let Err(error) = &decoded {
                         stats.decode_errors += 1;
                         stats.last_decode_error = Some(error.clone());
                     }
                 }
+
+                let decoded = match decoded {
+                    Ok(image) => image,
+                    Err(_) => {
+                        repaint_context.request_repaint();
+                        continue;
+                    }
+                };
 
                 let dropped = {
                     let mut queue = decoder_queue.lock().unwrap_or_else(PoisonError::into_inner);
@@ -185,7 +254,7 @@ fn spawn_camera_stream(
                         queue.pop_front();
                     }
 
-                    queue.push_back(decoded);
+                    queue.push_back(Ok(decoded));
 
                     dropped
                 };
@@ -481,6 +550,10 @@ impl eframe::App for BareEyeApp {
 
                 ui.separator();
 
+                ui.label(format!("JPEG repairs: {}", worker_stats.decode_repairs));
+
+                ui.separator();
+
                 ui.label(format!("Decode errors: {}", worker_stats.decode_errors));
             });
 
@@ -506,10 +579,14 @@ impl eframe::App for BareEyeApp {
                 ui.label(format!("Slow UI gaps: {}", self.slow_ui_gaps));
             });
 
+            if let Some(repair) = &worker_stats.last_decode_repair {
+                ui.label(format!("Last JPEG repair: {repair}"));
+            }
+
             if let Some(error) = &worker_stats.last_decode_error {
                 ui.colored_label(
                     egui::Color32::RED,
-                    format!("Last JPEG decode error: {error}"),
+                    format!("Last unrecoverable JPEG error: {error}"),
                 );
             }
 
