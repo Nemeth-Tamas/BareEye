@@ -24,15 +24,28 @@ impl Axis {
     }
 }
 
+enum WorkerCommand {
+    Apply(Controls),
+    ReadPosition,
+    Shutdown,
+}
+
+struct WorkerState {
+    actual_pan: Option<f32>,
+    actual_tilt: Option<f32>,
+    actual_zoom: Option<f32>,
+    last_error: Option<String>,
+    last_operation_ms: f32,
+}
+
 pub struct ManualController {
-    device: Device,
     capabilities: ControlCapabilities,
     pan_target: f32,
     tilt_target: f32,
     zoom_target: f32,
-    actual_pan: Option<f32>,
-    actual_tilt: Option<f32>,
-    actual_zoom: Option<f32>,
+    sender: std::sync::mpsc::Sender<WorkerCommand>,
+    worker: Option<thread::JoinHandle<()>>,
+    state: std::sync::Arc<std::sync::Mutex<WorkerState>>,
 }
 
 impl ManualController {
@@ -55,15 +68,75 @@ impl ManualController {
             .or_else(|| capabilities.zoom.map(|range| range.default))
             .unwrap_or(0.0);
 
+        let state = std::sync::Arc::new(std::sync::Mutex::new(WorkerState {
+            actual_pan: controls.pan,
+            actual_tilt: controls.tilt,
+            actual_zoom: controls.zoom,
+            last_error: None,
+            last_operation_ms: 0.0,
+        }));
+
+        let worker_state = std::sync::Arc::clone(&state);
+        let (sender, receiver) = std::sync::mpsc::channel();
+
+        let worker = thread::Builder::new()
+            .name("bareeye-ptz".to_owned())
+            .spawn(move || {
+                while let Ok(mut command) = receiver.recv() {
+                    while let Ok(newer_command) = receiver.try_recv() {
+                        command = newer_command;
+                    }
+
+                    match command {
+                        WorkerCommand::Apply(controls) => {
+                            let started = Instant::now();
+                            let result = cameras::apply_controls(&device, &controls);
+                            let elapsed_ms = started.elapsed().as_secs_f32() * 1000.0;
+
+                            let mut state = worker_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                            state.last_operation_ms = elapsed_ms;
+                            state.last_error = result.err().map(|error| error.to_string());
+                        }
+                        WorkerCommand::ReadPosition => {
+                            let started = Instant::now();
+                            let result = cameras::read_controls(&device);
+                            let elapsed_ms = started.elapsed().as_secs_f32() * 1000.0;
+
+                            let mut state = worker_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                            state.last_operation_ms = elapsed_ms;
+
+                            match result {
+                                Ok(controls) => {
+                                    state.actual_pan = controls.pan;
+                                    state.actual_tilt = controls.tilt;
+                                    state.actual_zoom = controls.zoom;
+                                    state.last_error = None;
+                                }
+                                Err(error) => {
+                                    state.last_error = Some(error.to_string());
+                                }
+                            }
+                        }
+                        WorkerCommand::Shutdown => break,
+                    }
+                }
+            })
+            .expect("failed to start BareEye PTZ worker");
+
         Ok(Self {
-            device,
             capabilities,
             pan_target,
             tilt_target,
             zoom_target,
-            actual_pan: controls.pan,
-            actual_tilt: controls.tilt,
-            actual_zoom: controls.zoom,
+            sender,
+            worker: Some(worker),
+            state,
         })
     }
 
@@ -80,55 +153,73 @@ impl ManualController {
     }
 
     pub fn actual_pan(&self) -> Option<f32> {
-        self.actual_pan
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .actual_pan
     }
 
     pub fn actual_tilt(&self) -> Option<f32> {
-        self.actual_tilt
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .actual_tilt
     }
 
     pub fn actual_zoom(&self) -> Option<f32> {
-        self.actual_zoom
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .actual_zoom
     }
 
-    pub fn refresh_actual(&mut self) -> Result<(), cameras::Error> {
-        let controls = cameras::read_controls(&self.device)?;
+    pub fn worker_error(&self) -> Option<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .last_error
+            .clone()
+    }
 
-        self.actual_pan = controls.pan;
-        self.actual_tilt = controls.tilt;
-        self.actual_zoom = controls.zoom;
+    pub fn last_operation_ms(&self) -> f32 {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .last_operation_ms
+    }
 
-        Ok(())
+    pub fn refresh_actual(&self) -> Result<(), String> {
+        self.send(WorkerCommand::ReadPosition)
     }
 
     pub fn zoom_range(&self) -> Option<ControlRange> {
         self.capabilities.zoom
     }
 
-    pub fn pan_by(&mut self, amount: f32) -> Result<(), cameras::Error> {
+    pub fn pan_by(&mut self, amount: f32) -> Result<(), String> {
         self.set_axis_target(Axis::Pan, self.pan_target + amount)
     }
 
-    pub fn tilt_by(&mut self, amount: f32) -> Result<(), cameras::Error> {
+    pub fn tilt_by(&mut self, amount: f32) -> Result<(), String> {
         self.set_axis_target(Axis::Tilt, self.tilt_target + amount)
     }
 
-    pub fn zoom_by(&mut self, amount: f32) -> Result<(), cameras::Error> {
+    pub fn zoom_by(&mut self, amount: f32) -> Result<(), String> {
         self.set_axis_target(Axis::Zoom, self.zoom_target + amount)
     }
 
-    pub fn set_zoom(&mut self, value: f32) -> Result<(), cameras::Error> {
+    pub fn set_zoom(&mut self, value: f32) -> Result<(), String> {
         self.set_axis_target(Axis::Zoom, value)
     }
 
-    pub fn center(&mut self) -> Result<(), cameras::Error> {
+    pub fn center(&mut self) -> Result<(), String> {
         let controls = Controls {
             pan: self.capabilities.pan.map(|range| range.default),
             tilt: self.capabilities.tilt.map(|range| range.default),
             ..Default::default()
         };
 
-        cameras::apply_controls(&self.device, &controls)?;
+        self.send(WorkerCommand::Apply(controls))?;
 
         if let Some(range) = self.capabilities.pan {
             self.pan_target = range.default;
@@ -141,7 +232,7 @@ impl ManualController {
         Ok(())
     }
 
-    pub fn wide(&mut self) -> Result<(), cameras::Error> {
+    pub fn wide(&mut self) -> Result<(), String> {
         let Some(range) = self.capabilities.zoom else {
             return Ok(());
         };
@@ -149,7 +240,7 @@ impl ManualController {
         self.set_axis_target(Axis::Zoom, range.default)
     }
 
-    fn set_axis_target(&mut self, axis: Axis, value: f32) -> Result<(), cameras::Error> {
+    fn set_axis_target(&mut self, axis: Axis, value: f32) -> Result<(), String> {
         let Some(range) = range_for_axis(&self.capabilities, axis) else {
             return Ok(());
         };
@@ -171,7 +262,7 @@ impl ManualController {
             },
         };
 
-        cameras::apply_controls(&self.device, &controls)?;
+        self.send(WorkerCommand::Apply(controls))?;
 
         match axis {
             Axis::Pan => self.pan_target = value,
@@ -180,6 +271,22 @@ impl ManualController {
         }
 
         Ok(())
+    }
+
+    fn send(&self, command: WorkerCommand) -> Result<(), String> {
+        self.sender
+            .send(command)
+            .map_err(|_| "PTZ worker has stopped".to_owned())
+    }
+}
+
+impl Drop for ManualController {
+    fn drop(&mut self) {
+        let _ = self.sender.send(WorkerCommand::Shutdown);
+
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 

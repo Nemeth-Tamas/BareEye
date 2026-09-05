@@ -115,10 +115,10 @@ impl BareEyeApp {
         }
     }
 
-    fn record_ptz_result(&mut self, result: Result<(), cameras::Error>) {
+    fn record_ptz_result(&mut self, result: Result<(), String>) {
         match result {
             Ok(()) => self.ptz_error = None,
-            Err(error) => self.ptz_error = Some(error.to_string()),
+            Err(error) => self.ptz_error = Some(error),
         }
     }
 }
@@ -360,8 +360,20 @@ impl eframe::App for BareEyeApp {
                 ));
             });
 
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "PTZ worker last operation: {:.1} ms",
+                    self.ptz.last_operation_ms()
+                ));
+
+                if let Some(error) = self.ptz.worker_error() {
+                    ui.separator();
+                    ui.colored_label(egui::Color32::RED, format!("PTZ worker error: {error}"));
+                }
+            });
+
             if let Some(error) = &self.ptz_error {
-                ui.colored_label(egui::Color32::RED, format!("PTZ error: {error}"));
+                ui.colored_label(egui::Color32::RED, format!("PTZ queue error: {error}"));
             }
 
             if let Some(error) = &self.last_error {
