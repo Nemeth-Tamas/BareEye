@@ -1,6 +1,11 @@
 use cameras::{ControlCapabilities, ControlRange, Controls, Device};
 use std::error::Error;
 use std::io::{self, Write};
+use std::thread;
+use std::time::{Duration, Instant};
+
+const MOVE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const MOVE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Copy, Clone)]
 enum Axis {

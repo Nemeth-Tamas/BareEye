@@ -8,7 +8,7 @@
 * [x] Enumerate supported camera-control properties
 * [x] Read pan, tilt, zoom, and focus ranges
 * [x] Read current pan, tilt, and zoom positions where supported
-* [ ] Implement absolute PTZ control
+* [x] Implement absolute PTZ control
 * [ ] Investigate relative / velocity PTZ control support
 * [ ] Implement safe PTZ limit handling
 
