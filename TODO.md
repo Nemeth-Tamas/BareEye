@@ -27,7 +27,7 @@
 
 ## 3. Vision pipeline
 
-* [ ] Integrate ONNX Runtime
+* [x] Integrate ONNX Runtime
 * [ ] Enable NVIDIA CUDA inference on Windows
 * [ ] Add person detection
 * [ ] Add face detection
