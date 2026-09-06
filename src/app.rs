@@ -17,7 +17,9 @@ const PTZ_BUTTON_COOLDOWN: Duration = Duration::from_millis(200);
 const TRACKING_COMMAND_INTERVAL: Duration = Duration::from_millis(50);
 const TRACKING_DEADZONE_X: f32 = 0.04;
 const TRACKING_DEADZONE_Y: f32 = 0.05;
-const TRACKING_SMOOTHING: f32 = 0.35;
+
+const EAGLEEYE_USB_WIDE_HFOV_DEGREES: f32 = 74.0;
+const EAGLEEYE_USB_MAX_OPTICAL_ZOOM: f32 = 12.0;
 
 pub fn run(
     camera: cameras::Camera,
@@ -497,8 +499,6 @@ struct BareEyeApp {
     selected_target: Option<SelectedTarget>,
     tracking_enabled: bool,
     last_tracking_command_at: Option<Instant>,
-    tracking_error_x: f32,
-    tracking_error_y: f32,
     debug: bool,
     ptz_error: Option<String>,
     last_ptz_button_at: Option<Instant>,
@@ -538,8 +538,6 @@ impl BareEyeApp {
             selected_target: None,
             tracking_enabled: false,
             last_tracking_command_at: None,
-            tracking_error_x: 0.0,
-            tracking_error_y: 0.0,
             debug,
             ptz_error: None,
             last_ptz_button_at: None,
@@ -580,24 +578,31 @@ impl BareEyeApp {
         self.last_ptz_button_at = Some(Instant::now());
     }
 
-    fn tracking_step(error: f32, deadzone: f32) -> f32 {
-        let magnitude = error.abs();
+    fn estimated_horizontal_fov_degrees(&self) -> f32 {
+        let zoom = self
+            .ptz
+            .actual_zoom()
+            .unwrap_or_else(|| self.ptz.zoom_target());
 
-        if magnitude <= deadzone {
-            return 0.0;
-        }
+        let zoom_ratio = self.ptz.zoom_range().map_or(1.0, |range| {
+            let span = range.max - range.min;
 
-        let normalized = ((magnitude - deadzone) / (0.5 - deadzone)).clamp(0.0, 1.0);
+            if span.abs() <= f32::EPSILON {
+                1.0
+            } else {
+                let normalized_zoom = ((zoom - range.min) / span).clamp(0.0, 1.0);
 
-        let degrees = (1.0 + normalized * 4.0).round();
+                1.0 + normalized_zoom * (EAGLEEYE_USB_MAX_OPTICAL_ZOOM - 1.0)
+            }
+        });
 
-        degrees * error.signum()
+        let wide_half_angle = (EAGLEEYE_USB_WIDE_HFOV_DEGREES.to_radians() * 0.5).tan();
+
+        (2.0 * (wide_half_angle / zoom_ratio).atan()).to_degrees()
     }
 
     fn update_tracking(&mut self) {
         if !self.tracking_enabled {
-            self.tracking_error_x = 0.0;
-            self.tracking_error_y = 0.0;
             return;
         }
 
@@ -606,8 +611,6 @@ impl BareEyeApp {
             .as_ref()
             .filter(|target| target.visible)
         else {
-            self.tracking_error_x = 0.0;
-            self.tracking_error_y = 0.0;
             return;
         };
 
@@ -621,27 +624,36 @@ impl BareEyeApp {
         let center_x = (target.detection.x1 + target.detection.x2) * 0.5;
         let center_y = (target.detection.y1 + target.detection.y2) * 0.5;
 
-        let raw_error_x = (center_x - self.info.width as f32 * 0.5) / self.info.width as f32;
+        let error_x = (center_x - self.info.width as f32 * 0.5) / self.info.width as f32;
 
-        let raw_error_y = (center_y - self.info.height as f32 * 0.5) / self.info.height as f32;
+        let error_y = (center_y - self.info.height as f32 * 0.5) / self.info.height as f32;
 
-        if raw_error_x.abs() <= TRACKING_DEADZONE_X {
-            self.tracking_error_x = 0.0;
+        let horizontal_fov = self.estimated_horizontal_fov_degrees().to_radians();
+
+        let aspect_ratio = self.info.width as f32 / self.info.height as f32;
+
+        let vertical_fov = 2.0 * ((horizontal_fov * 0.5).tan() / aspect_ratio).atan();
+
+        let normalized_x = error_x * 2.0;
+        let normalized_y = error_y * 2.0;
+
+        let pan_delta = if error_x.abs() <= TRACKING_DEADZONE_X {
+            0.0
         } else {
-            self.tracking_error_x += (raw_error_x - self.tracking_error_x) * TRACKING_SMOOTHING;
-        }
+            (normalized_x * (horizontal_fov * 0.5).tan())
+                .atan()
+                .to_degrees()
+        };
 
-        if raw_error_y.abs() <= TRACKING_DEADZONE_Y {
-            self.tracking_error_y = 0.0;
+        let tilt_delta = if error_y.abs() <= TRACKING_DEADZONE_Y {
+            0.0
         } else {
-            self.tracking_error_y += (raw_error_y - self.tracking_error_y) * TRACKING_SMOOTHING;
-        }
+            -(normalized_y * (vertical_fov * 0.5).tan())
+                .atan()
+                .to_degrees()
+        };
 
-        let pan_step = Self::tracking_step(self.tracking_error_x, TRACKING_DEADZONE_X);
-
-        let tilt_step = -Self::tracking_step(self.tracking_error_y, TRACKING_DEADZONE_Y);
-
-        match self.ptz.track_by(pan_step, tilt_step) {
+        match self.ptz.track_by(pan_delta, tilt_delta) {
             Ok(true) => {
                 self.last_tracking_command_at = Some(Instant::now());
                 self.ptz_error = None;

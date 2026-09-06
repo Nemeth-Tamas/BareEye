@@ -298,13 +298,18 @@ impl ManualController {
                             let started = Instant::now();
 
                             let result = (|| -> Result<(), String> {
-                                let (current_pan_target, current_tilt_target) = {
-                                    let state = worker_state
+                                let current = cameras::read_controls(&device)
+                                    .map_err(|error| error.to_string())?;
+
+                                {
+                                    let mut state = worker_state
                                         .lock()
                                         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-                                    (state.target_pan, state.target_tilt)
-                                };
+                                    state.actual_pan = current.pan;
+                                    state.actual_tilt = current.tilt;
+                                    state.actual_zoom = current.zoom;
+                                }
 
                                 let pan_target = if pan.abs() > f32::EPSILON {
                                     let Some(range) = worker_capabilities.pan else {
@@ -313,8 +318,10 @@ impl ManualController {
                                         );
                                     };
 
+                                    let actual = current.pan.unwrap_or(range.default);
+
                                     Some(snap_to_step(
-                                        (current_pan_target + pan).clamp(range.min, range.max),
+                                        (actual + pan).clamp(range.min, range.max),
                                         range,
                                     ))
                                 } else {
@@ -328,8 +335,10 @@ impl ManualController {
                                         );
                                     };
 
+                                    let actual = current.tilt.unwrap_or(range.default);
+
                                     Some(snap_to_step(
-                                        (current_tilt_target + tilt).clamp(range.min, range.max),
+                                        (actual + tilt).clamp(range.min, range.max),
                                         range,
                                     ))
                                 } else {
@@ -349,19 +358,28 @@ impl ManualController {
                                 cameras::apply_controls(&device, &controls)
                                     .map_err(|error| error.to_string())?;
 
-                                let mut state = worker_state
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                {
+                                    let mut state = worker_state
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-                                if let Some(target) = pan_target {
-                                    state.target_pan = target;
+                                    if let Some(target) = pan_target {
+                                        state.target_pan = target;
+                                    }
+
+                                    if let Some(target) = tilt_target {
+                                        state.target_tilt = target;
+                                    }
                                 }
 
-                                if let Some(target) = tilt_target {
-                                    state.target_tilt = target;
-                                }
-
-                                Ok(())
+                                wait_for_worker_targets(
+                                    &device,
+                                    &worker_capabilities,
+                                    &worker_state,
+                                    pan_target,
+                                    tilt_target,
+                                    None,
+                                )
                             })();
 
                             let mut state = worker_state
