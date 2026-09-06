@@ -307,37 +307,87 @@ pub fn movement_test(device: &Device) -> Result<(), Box<dyn Error>> {
     let control = source.cast::<IKsControl>()?;
 
     println!("IKsControl opened.");
-    println!("Using PAN_RELATIVE=10 and TILT_RELATIVE=11 directly.");
-
-    let stop_guard = KsRelativeStopGuard { control: &control };
+    println!("Probing SET buffer requirements without moving the camera.");
 
     println!();
-    println!("Sending speed 0 to both axes first...");
-    stop_ks_relative(&control)?;
-
-    thread::sleep(Duration::from_millis(500));
-
-    run_ks_motion_step(&control, "PAN_RELATIVE +2", PAN_RELATIVE_PROPERTY_ID, 2)?;
-
-    run_ks_motion_step(&control, "PAN_RELATIVE -2", PAN_RELATIVE_PROPERTY_ID, -2)?;
-
-    run_ks_motion_step(&control, "TILT_RELATIVE +2", TILT_RELATIVE_PROPERTY_ID, 2)?;
-
-    run_ks_motion_step(&control, "TILT_RELATIVE -2", TILT_RELATIVE_PROPERTY_ID, -2)?;
+    probe_set_buffer_requirements(&control, "PAN_RELATIVE", PAN_RELATIVE_PROPERTY_ID);
 
     println!();
-    println!("True KS relative movement test complete.");
-    println!("Final STOP sent.");
-
-    stop_ks_relative(&control)?;
-
-    drop(stop_guard);
+    probe_set_buffer_requirements(&control, "TILT_RELATIVE", TILT_RELATIVE_PROPERTY_ID);
 
     unsafe {
         let _ = source.Shutdown();
     }
 
     Ok(())
+}
+
+fn probe_set_buffer_requirements(control: &IKsControl, label: &str, property_id: u32) {
+    println!("{label} SET buffer probe");
+    println!("------------------------------");
+
+    let bare_property = KsPropertyRaw {
+        set: CAMERA_CONTROL_PROPERTY_SET,
+        id: property_id,
+        flags: PROPERTY_TYPE_SET,
+    };
+
+    let full_property = KsCameraControlRaw {
+        set: CAMERA_CONTROL_PROPERTY_SET,
+        id: property_id,
+        property_flags: PROPERTY_TYPE_SET,
+        value: 0,
+        camera_flags: 0,
+        capabilities: 0,
+    };
+
+    probe_set_descriptor(
+        control,
+        "24-byte KSPROPERTY descriptor",
+        &bare_property as *const KsPropertyRaw as *const KSIDENTIFIER,
+        size_of::<KsPropertyRaw>() as u32,
+    );
+
+    probe_set_descriptor(
+        control,
+        "36-byte CAMERACONTROL descriptor",
+        &full_property as *const KsCameraControlRaw as *const KSIDENTIFIER,
+        size_of::<KsCameraControlRaw>() as u32,
+    );
+}
+
+fn probe_set_descriptor(
+    control: &IKsControl,
+    label: &str,
+    property: *const KSIDENTIFIER,
+    property_length: u32,
+) {
+    let mut bytes_returned = 0u32;
+
+    let result = unsafe {
+        control.KsProperty(
+            property,
+            property_length,
+            std::ptr::null_mut(),
+            0,
+            &mut bytes_returned,
+        )
+    };
+
+    match result {
+        Ok(()) => {
+            println!("  {label}: SUCCESS, required data bytes = {bytes_returned}");
+        }
+        Err(error) => {
+            println!(
+                "  {label}: HRESULT=0x{:08X}, required data bytes = {}",
+                error.code().0 as u32,
+                bytes_returned
+            );
+
+            println!("    {error}");
+        }
+    }
 }
 
 fn run_ks_motion_step(
