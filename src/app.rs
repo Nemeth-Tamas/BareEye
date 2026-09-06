@@ -15,6 +15,8 @@ const SLOW_UI_GAP: Duration = Duration::from_millis(50);
 const PTZ_BUTTON_COOLDOWN: Duration = Duration::from_millis(200);
 
 const TRACKING_COMMAND_INTERVAL: Duration = Duration::from_millis(50);
+const TRACKING_POST_MOVE_SETTLE: Duration = Duration::from_millis(250);
+const TRACKING_CORRECTION_GAIN: f32 = 0.65;
 const TRACKING_DEADZONE_X: f32 = 0.04;
 const TRACKING_DEADZONE_Y: f32 = 0.05;
 
@@ -499,6 +501,10 @@ struct BareEyeApp {
     selected_target: Option<SelectedTarget>,
     tracking_enabled: bool,
     last_tracking_command_at: Option<Instant>,
+    tracking_was_busy: bool,
+    tracking_settle_until: Option<Instant>,
+    tracking_settle_after_frame: u64,
+    last_tracking_vision_frame: u64,
     debug: bool,
     ptz_error: Option<String>,
     last_ptz_button_at: Option<Instant>,
@@ -538,6 +544,10 @@ impl BareEyeApp {
             selected_target: None,
             tracking_enabled: false,
             last_tracking_command_at: None,
+            tracking_was_busy: false,
+            tracking_settle_until: None,
+            tracking_settle_after_frame: 0,
+            last_tracking_vision_frame: 0,
             debug,
             ptz_error: None,
             last_ptz_button_at: None,
@@ -601,10 +611,51 @@ impl BareEyeApp {
         (2.0 * (wide_half_angle / zoom_ratio).atan()).to_degrees()
     }
 
-    fn update_tracking(&mut self) {
+    fn update_tracking(&mut self, vision_frame: u64) {
         if !self.tracking_enabled {
+            self.tracking_was_busy = false;
+            self.tracking_settle_until = None;
             return;
         }
+
+        let tracking_busy = self.ptz.tracking_busy();
+
+        if tracking_busy {
+            self.tracking_was_busy = true;
+            return;
+        }
+
+        if self.tracking_was_busy {
+            self.tracking_was_busy = false;
+            self.tracking_settle_until = Some(Instant::now() + TRACKING_POST_MOVE_SETTLE);
+            self.tracking_settle_after_frame = vision_frame;
+            return;
+        }
+
+        if let Some(settle_until) = self.tracking_settle_until {
+            if Instant::now() < settle_until {
+                return;
+            }
+
+            if vision_frame <= self.tracking_settle_after_frame {
+                return;
+            }
+
+            self.tracking_settle_until = None;
+        }
+
+        if vision_frame == self.last_tracking_vision_frame {
+            return;
+        }
+
+        if self
+            .last_tracking_command_at
+            .is_some_and(|last| last.elapsed() < TRACKING_COMMAND_INTERVAL)
+        {
+            return;
+        }
+
+        self.last_tracking_vision_frame = vision_frame;
 
         let Some(target) = self
             .selected_target
@@ -613,13 +664,6 @@ impl BareEyeApp {
         else {
             return;
         };
-
-        if self
-            .last_tracking_command_at
-            .is_some_and(|last| last.elapsed() < TRACKING_COMMAND_INTERVAL)
-        {
-            return;
-        }
 
         let center_x = (target.detection.x1 + target.detection.x2) * 0.5;
         let center_y = (target.detection.y1 + target.detection.y2) * 0.5;
@@ -643,6 +687,7 @@ impl BareEyeApp {
             (normalized_x * (horizontal_fov * 0.5).tan())
                 .atan()
                 .to_degrees()
+                * TRACKING_CORRECTION_GAIN
         };
 
         let tilt_delta = if error_y.abs() <= TRACKING_DEADZONE_Y {
@@ -651,6 +696,7 @@ impl BareEyeApp {
             -(normalized_y * (vertical_fov * 0.5).tan())
                 .atan()
                 .to_degrees()
+                * TRACKING_CORRECTION_GAIN
         };
 
         match self.ptz.track_by(pan_delta, tilt_delta) {
@@ -806,7 +852,7 @@ impl eframe::App for BareEyeApp {
             self.tracking_enabled = false;
         }
 
-        self.update_tracking();
+        self.update_tracking(vision.processed_frames);
 
         let person_count = vision
             .detections

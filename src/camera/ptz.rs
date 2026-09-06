@@ -520,6 +520,10 @@ impl ManualController {
         Ok(true)
     }
 
+    pub fn tracking_busy(&self) -> bool {
+        self.tracking_pending.load(Ordering::Acquire)
+    }
+
     pub fn zoom_by(&self, amount: f32) -> Result<(), String> {
         self.send(WorkerCommand::Relative(Axis::Zoom, amount))
     }
