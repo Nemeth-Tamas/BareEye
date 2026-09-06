@@ -3,6 +3,8 @@ use std::error::Error;
 use std::ffi::c_void;
 use std::io;
 use std::mem::{size_of, size_of_val};
+use std::thread;
+use std::time::Duration;
 use windows::Win32::Foundation::{S_FALSE, S_OK};
 use windows::Win32::Media::KernelStreaming::{IKsControl, KSIDENTIFIER};
 use windows::Win32::Media::MediaFoundation::{
@@ -35,6 +37,20 @@ struct KsPropertyRaw {
     set: GUID,
     id: u32,
     flags: u32,
+}
+
+const CAMERA_CONTROL_FLAGS_MANUAL: u32 = 0x0002;
+const CAMERA_CONTROL_FLAGS_RELATIVE: u32 = 0x0010;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct KsCameraControlRaw {
+    set: GUID,
+    id: u32,
+    property_flags: u32,
+    value: i32,
+    camera_flags: u32,
+    capabilities: u32,
 }
 
 const MEMBER_RANGES: u32 = 1;
@@ -172,6 +188,146 @@ pub fn probe(device: &Device) -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+pub fn movement_test(device: &Device) -> Result<(), Box<dyn Error>> {
+    let _com = ComGuard::init()?;
+    let _mf = MfGuard::init()?;
+
+    println!();
+    println!("BareEye relative PTZ movement test");
+    println!("==================================");
+    println!("Device: {}", device.name);
+
+    let activations = enumerate_activations()?;
+
+    let mut matching_activation = None;
+
+    for activation in activations {
+        let symbolic_link = match read_string(
+            &activation,
+            &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
+        ) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+
+        if symbolic_link == device.id.0 {
+            matching_activation = Some(activation);
+            break;
+        }
+    }
+
+    let activation = matching_activation.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "Could not find the EagleEye Media Foundation activation object",
+        )
+    })?;
+
+    let source: IMFMediaSource = unsafe { activation.ActivateObject()? };
+    let control = source.cast::<IKsControl>()?;
+
+    let _stop_guard = RelativeStopGuard { control: &control };
+
+    println!("Sending STOP to both axes first...");
+    stop_relative(&control)?;
+
+    thread::sleep(Duration::from_millis(500));
+
+    run_motion_step(&control, "PAN +1", PAN_RELATIVE_PROPERTY_ID, 1)?;
+
+    run_motion_step(&control, "PAN -1", PAN_RELATIVE_PROPERTY_ID, -1)?;
+
+    run_motion_step(&control, "TILT +1", TILT_RELATIVE_PROPERTY_ID, 1)?;
+
+    run_motion_step(&control, "TILT -1", TILT_RELATIVE_PROPERTY_ID, -1)?;
+
+    println!();
+    println!("Movement test complete.");
+    println!("Final STOP sent.");
+
+    stop_relative(&control)?;
+
+    unsafe {
+        let _ = source.Shutdown();
+    }
+
+    Ok(())
+}
+
+fn run_motion_step(
+    control: &IKsControl,
+    label: &str,
+    property_id: u32,
+    value: i32,
+) -> windows::core::Result<()> {
+    println!();
+    println!("{label}");
+    println!("  START");
+
+    set_relative(control, property_id, value)?;
+
+    thread::sleep(Duration::from_millis(500));
+
+    println!("  STOP");
+
+    set_relative(control, property_id, 0)?;
+
+    thread::sleep(Duration::from_millis(500));
+
+    Ok(())
+}
+
+fn set_relative(control: &IKsControl, property_id: u32, value: i32) -> windows::core::Result<()> {
+    debug_assert_eq!(size_of::<KsCameraControlRaw>(), 36);
+
+    let camera_flags = CAMERA_CONTROL_FLAGS_MANUAL | CAMERA_CONTROL_FLAGS_RELATIVE;
+
+    let request = KsCameraControlRaw {
+        set: CAMERA_CONTROL_PROPERTY_SET,
+        id: property_id,
+        property_flags: PROPERTY_TYPE_SET,
+        value,
+        camera_flags,
+        capabilities: camera_flags,
+    };
+
+    let mut data = request;
+    let mut bytes_returned = 0u32;
+
+    unsafe {
+        control.KsProperty(
+            &request as *const KsCameraControlRaw as *const KSIDENTIFIER,
+            size_of::<KsCameraControlRaw>() as u32,
+            &mut data as *mut KsCameraControlRaw as *mut c_void,
+            size_of::<KsCameraControlRaw>() as u32,
+            &mut bytes_returned,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn stop_relative(control: &IKsControl) -> windows::core::Result<()> {
+    let pan_result = set_relative(control, PAN_RELATIVE_PROPERTY_ID, 0);
+
+    let tilt_result = set_relative(control, TILT_RELATIVE_PROPERTY_ID, 0);
+
+    pan_result?;
+    tilt_result?;
+
+    Ok(())
+}
+
+struct RelativeStopGuard<'a> {
+    control: &'a IKsControl,
+}
+
+impl Drop for RelativeStopGuard<'_> {
+    fn drop(&mut self) {
+        let _ = stop_relative(self.control);
+    }
 }
 
 fn print_basic_support_details(control: &IKsControl, name: &str, property_id: u32) {
