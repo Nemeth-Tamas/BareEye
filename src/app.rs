@@ -14,9 +14,10 @@ const SLOW_DISPLAY_GAP: Duration = Duration::from_millis(45);
 const SLOW_UI_GAP: Duration = Duration::from_millis(50);
 const PTZ_BUTTON_COOLDOWN: Duration = Duration::from_millis(200);
 
-const TRACKING_COMMAND_INTERVAL: Duration = Duration::from_millis(150);
+const TRACKING_COMMAND_INTERVAL: Duration = Duration::from_millis(50);
 const TRACKING_DEADZONE_X: f32 = 0.04;
 const TRACKING_DEADZONE_Y: f32 = 0.05;
+const TRACKING_SMOOTHING: f32 = 0.35;
 
 pub fn run(
     camera: cameras::Camera,
@@ -496,6 +497,8 @@ struct BareEyeApp {
     selected_target: Option<SelectedTarget>,
     tracking_enabled: bool,
     last_tracking_command_at: Option<Instant>,
+    tracking_error_x: f32,
+    tracking_error_y: f32,
     debug: bool,
     ptz_error: Option<String>,
     last_ptz_button_at: Option<Instant>,
@@ -535,6 +538,8 @@ impl BareEyeApp {
             selected_target: None,
             tracking_enabled: false,
             last_tracking_command_at: None,
+            tracking_error_x: 0.0,
+            tracking_error_y: 0.0,
             debug,
             ptz_error: None,
             last_ptz_button_at: None,
@@ -579,18 +584,20 @@ impl BareEyeApp {
         let magnitude = error.abs();
 
         if magnitude <= deadzone {
-            0.0
-        } else if magnitude >= 0.25 {
-            3.0 * error.signum()
-        } else if magnitude >= 0.12 {
-            2.0 * error.signum()
-        } else {
-            1.0 * error.signum()
+            return 0.0;
         }
+
+        let normalized = ((magnitude - deadzone) / (0.5 - deadzone)).clamp(0.0, 1.0);
+
+        let degrees = (1.0 + normalized * 4.0).round();
+
+        degrees * error.signum()
     }
 
     fn update_tracking(&mut self) {
         if !self.tracking_enabled {
+            self.tracking_error_x = 0.0;
+            self.tracking_error_y = 0.0;
             return;
         }
 
@@ -599,6 +606,8 @@ impl BareEyeApp {
             .as_ref()
             .filter(|target| target.visible)
         else {
+            self.tracking_error_x = 0.0;
+            self.tracking_error_y = 0.0;
             return;
         };
 
@@ -612,13 +621,25 @@ impl BareEyeApp {
         let center_x = (target.detection.x1 + target.detection.x2) * 0.5;
         let center_y = (target.detection.y1 + target.detection.y2) * 0.5;
 
-        let error_x = (center_x - self.info.width as f32 * 0.5) / self.info.width as f32;
+        let raw_error_x = (center_x - self.info.width as f32 * 0.5) / self.info.width as f32;
 
-        let error_y = (center_y - self.info.height as f32 * 0.5) / self.info.height as f32;
+        let raw_error_y = (center_y - self.info.height as f32 * 0.5) / self.info.height as f32;
 
-        let pan_step = Self::tracking_step(error_x, TRACKING_DEADZONE_X);
+        if raw_error_x.abs() <= TRACKING_DEADZONE_X {
+            self.tracking_error_x = 0.0;
+        } else {
+            self.tracking_error_x += (raw_error_x - self.tracking_error_x) * TRACKING_SMOOTHING;
+        }
 
-        let tilt_step = -Self::tracking_step(error_y, TRACKING_DEADZONE_Y);
+        if raw_error_y.abs() <= TRACKING_DEADZONE_Y {
+            self.tracking_error_y = 0.0;
+        } else {
+            self.tracking_error_y += (raw_error_y - self.tracking_error_y) * TRACKING_SMOOTHING;
+        }
+
+        let pan_step = Self::tracking_step(self.tracking_error_x, TRACKING_DEADZONE_X);
+
+        let tilt_step = -Self::tracking_step(self.tracking_error_y, TRACKING_DEADZONE_Y);
 
         match self.ptz.track_by(pan_step, tilt_step) {
             Ok(true) => {

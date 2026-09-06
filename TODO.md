@@ -47,7 +47,7 @@
 
 ## 5. PTZ tracking controller
 
-* [ ] Convert image-space target error into pan and tilt commands
+* [x] Convert image-space target error into pan and tilt commands
 * [ ] Maintain sub-degree internal PTZ targets and accumulate fractional corrections
 * [ ] Quantize physical PTZ commands to the camera's actual supported hardware step
 * [ ] Add smoothing and dead zones
@@ -59,7 +59,7 @@
 
 ## 6. Framing and zoom lock
 
-* [ ] Add center-follow mode
+* [x] Add center-follow mode
 * [ ] Add loose follow mode
 * [ ] Add exact framing-lock mode
 * [ ] Preserve target position within the frame
