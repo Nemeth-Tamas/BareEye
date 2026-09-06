@@ -2,7 +2,7 @@ use cameras::Device;
 use std::error::Error;
 use std::ffi::c_void;
 use std::io;
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 use windows::Win32::Foundation::{S_FALSE, S_OK};
 use windows::Win32::Media::KernelStreaming::{IKsControl, KSIDENTIFIER};
 use windows::Win32::Media::MediaFoundation::{
@@ -35,6 +35,45 @@ struct KsPropertyRaw {
     set: GUID,
     id: u32,
     flags: u32,
+}
+
+const MEMBER_RANGES: u32 = 1;
+const MEMBER_STEPPED_RANGES: u32 = 2;
+const MEMBER_VALUES: u32 = 3;
+
+#[repr(C, align(8))]
+#[derive(Clone, Copy)]
+struct KsPropertyDescriptionRaw {
+    access_flags: u32,
+    description_size: u32,
+    prop_type_set: KsPropertyRaw,
+    members_list_count: u32,
+    reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct KsMembersHeaderRaw {
+    members_flags: u32,
+    members_size: u32,
+    members_count: u32,
+    flags: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct KsSteppingLongRaw {
+    stepping_delta: u32,
+    reserved: u32,
+    signed_minimum: i32,
+    signed_maximum: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct KsBoundsLongRaw {
+    signed_minimum: i32,
+    signed_maximum: i32,
 }
 
 pub fn probe(device: &Device) -> Result<(), Box<dyn Error>> {
@@ -113,6 +152,14 @@ pub fn probe(device: &Device) -> Result<(), Box<dyn Error>> {
                     }
                 }
             }
+
+            println!();
+            println!("Relative PTZ speed details");
+            println!("--------------------------");
+
+            print_basic_support_details(&control, "PAN_RELATIVE", PAN_RELATIVE_PROPERTY_ID);
+
+            print_basic_support_details(&control, "TILT_RELATIVE", TILT_RELATIVE_PROPERTY_ID);
         }
         Err(error) => {
             println!("IKsControl: NOT AVAILABLE");
@@ -125,6 +172,141 @@ pub fn probe(device: &Device) -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+fn print_basic_support_details(control: &IKsControl, name: &str, property_id: u32) {
+    let property = KsPropertyRaw {
+        set: CAMERA_CONTROL_PROPERTY_SET,
+        id: property_id,
+        flags: PROPERTY_TYPE_BASICSUPPORT,
+    };
+
+    let mut buffer = [0u64; 128];
+    let mut bytes_returned = 0u32;
+
+    let result = unsafe {
+        control.KsProperty(
+            &property as *const KsPropertyRaw as *const KSIDENTIFIER,
+            size_of::<KsPropertyRaw>() as u32,
+            buffer.as_mut_ptr() as *mut c_void,
+            size_of_val(&buffer) as u32,
+            &mut bytes_returned,
+        )
+    };
+
+    println!();
+    println!("{name} full BasicSupport:");
+
+    if let Err(error) = result {
+        println!("  Query failed: {error}");
+        return;
+    }
+
+    println!("  Bytes returned: {bytes_returned}");
+
+    let byte_count = bytes_returned as usize;
+
+    if byte_count < size_of::<KsPropertyDescriptionRaw>() {
+        println!("  Driver returned no detailed range description.");
+        return;
+    }
+
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            buffer.as_ptr() as *const u8,
+            byte_count.min(size_of_val(&buffer)),
+        )
+    };
+
+    let Some(description) = read_unaligned::<KsPropertyDescriptionRaw>(bytes, 0) else {
+        println!("  Could not decode KSPROPERTY_DESCRIPTION.");
+        return;
+    };
+
+    println!("  Access mask: 0x{:08X}", description.access_flags);
+    println!("  Description size: {}", description.description_size);
+    println!("  Members lists: {}", description.members_list_count);
+
+    let mut offset = size_of::<KsPropertyDescriptionRaw>();
+
+    for list_index in 0..description.members_list_count {
+        let Some(header) = read_unaligned::<KsMembersHeaderRaw>(bytes, offset) else {
+            println!("  Member list {list_index}: truncated header");
+            return;
+        };
+
+        offset += size_of::<KsMembersHeaderRaw>();
+
+        println!(
+            "  Member list {list_index}: type={} size={} count={} flags=0x{:08X}",
+            header.members_flags, header.members_size, header.members_count, header.flags
+        );
+
+        match header.members_flags {
+            MEMBER_STEPPED_RANGES => {
+                for member_index in 0..header.members_count {
+                    let Some(range) = read_unaligned::<KsSteppingLongRaw>(bytes, offset) else {
+                        println!("    Stepped range {member_index}: truncated");
+                        return;
+                    };
+
+                    println!(
+                        "    Stepped range {member_index}: min={} max={} step={}",
+                        range.signed_minimum, range.signed_maximum, range.stepping_delta
+                    );
+
+                    offset += header.members_size as usize;
+                }
+            }
+
+            MEMBER_RANGES => {
+                for member_index in 0..header.members_count {
+                    let Some(range) = read_unaligned::<KsBoundsLongRaw>(bytes, offset) else {
+                        println!("    Range {member_index}: truncated");
+                        return;
+                    };
+
+                    println!(
+                        "    Range {member_index}: min={} max={}",
+                        range.signed_minimum, range.signed_maximum
+                    );
+
+                    offset += header.members_size as usize;
+                }
+            }
+
+            MEMBER_VALUES => {
+                for member_index in 0..header.members_count {
+                    let Some(value) = read_unaligned::<i32>(bytes, offset) else {
+                        println!("    Value {member_index}: truncated");
+                        return;
+                    };
+
+                    println!("    Value {member_index}: {value}");
+
+                    offset += header.members_size as usize;
+                }
+            }
+
+            other => {
+                let member_bytes = header.members_size as usize * header.members_count as usize;
+
+                println!("    Unknown member representation: {other}");
+
+                offset = offset.saturating_add(member_bytes);
+            }
+        }
+    }
+}
+
+fn read_unaligned<T: Copy>(bytes: &[u8], offset: usize) -> Option<T> {
+    let end = offset.checked_add(size_of::<T>())?;
+
+    if end > bytes.len() {
+        return None;
+    }
+
+    Some(unsafe { std::ptr::read_unaligned(bytes.as_ptr().add(offset) as *const T) })
 }
 
 fn query_basic_support(
