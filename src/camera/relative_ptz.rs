@@ -43,6 +43,20 @@ struct KsPropertyRaw {
     flags: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct KsCameraControlRaw {
+    set: GUID,
+    id: u32,
+    property_flags: u32,
+    value: i32,
+    camera_flags: u32,
+    capabilities: u32,
+}
+
+const KS_CAMERA_CONTROL_FLAGS_MANUAL: u32 = 0x0002;
+const KS_CAMERA_CONTROL_FLAGS_RELATIVE: u32 = 0x0010;
+
 const CAMERA_CONTROL_FLAGS_RELATIVE: i32 = 0x0010;
 const ERROR_BUSY_HRESULT: i32 = 0x800700AAu32 as i32;
 
@@ -259,8 +273,8 @@ pub fn movement_test(device: &Device) -> Result<(), Box<dyn Error>> {
     let _mf = MfGuard::init()?;
 
     println!();
-    println!("BareEye relative PTZ movement test");
-    println!("==================================");
+    println!("BareEye true KS relative PTZ movement test");
+    println!("==========================================");
     println!("Device: {}", device.name);
 
     let activations = enumerate_activations()?;
@@ -290,28 +304,32 @@ pub fn movement_test(device: &Device) -> Result<(), Box<dyn Error>> {
     })?;
 
     let source: IMFMediaSource = unsafe { activation.ActivateObject()? };
-    let control = source.cast::<IAMCameraControl>()?;
+    let control = source.cast::<IKsControl>()?;
 
-    println!("IAMCameraControl relative path opened.");
+    println!("IKsControl opened.");
+    println!("Using PAN_RELATIVE=10 and TILT_RELATIVE=11 directly.");
 
-    let stop_guard = RelativeStopGuard { control: &control };
+    let stop_guard = KsRelativeStopGuard { control: &control };
 
-    println!("Sending zero-relative commands first...");
-    stop_relative(&control)?;
+    println!();
+    println!("Sending speed 0 to both axes first...");
+    stop_ks_relative(&control)?;
 
     thread::sleep(Duration::from_millis(500));
 
-    run_motion_step(&control, "PAN +2", CameraControl_Pan, 2)?;
-    run_motion_step(&control, "PAN -2", CameraControl_Pan, -2)?;
+    run_ks_motion_step(&control, "PAN_RELATIVE +2", PAN_RELATIVE_PROPERTY_ID, 2)?;
 
-    run_motion_step(&control, "TILT +2", CameraControl_Tilt, 2)?;
-    run_motion_step(&control, "TILT -2", CameraControl_Tilt, -2)?;
+    run_ks_motion_step(&control, "PAN_RELATIVE -2", PAN_RELATIVE_PROPERTY_ID, -2)?;
+
+    run_ks_motion_step(&control, "TILT_RELATIVE +2", TILT_RELATIVE_PROPERTY_ID, 2)?;
+
+    run_ks_motion_step(&control, "TILT_RELATIVE -2", TILT_RELATIVE_PROPERTY_ID, -2)?;
 
     println!();
-    println!("Movement test complete.");
-    println!("Sending final zero-relative commands.");
+    println!("True KS relative movement test complete.");
+    println!("Final STOP sent.");
 
-    stop_relative(&control)?;
+    stop_ks_relative(&control)?;
 
     drop(stop_guard);
 
@@ -322,27 +340,86 @@ pub fn movement_test(device: &Device) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run_motion_step(
-    control: &IAMCameraControl,
+fn run_ks_motion_step(
+    control: &IKsControl,
     label: &str,
-    property: CameraControlProperty,
+    property_id: u32,
     value: i32,
 ) -> windows::core::Result<()> {
     println!();
     println!("{label}");
-    println!("  command");
+    println!("  START speed {value}");
 
-    set_relative(control, property, value)?;
-
-    thread::sleep(Duration::from_millis(1000));
-
-    println!("  zero");
-
-    set_relative(control, property, 0)?;
+    set_ks_relative(control, property_id, value)?;
 
     thread::sleep(Duration::from_millis(500));
 
+    println!("  STOP");
+
+    set_ks_relative(control, property_id, 0)?;
+
+    thread::sleep(Duration::from_millis(700));
+
     Ok(())
+}
+
+fn set_ks_relative(
+    control: &IKsControl,
+    property_id: u32,
+    value: i32,
+) -> windows::core::Result<()> {
+    debug_assert_eq!(size_of::<KsPropertyRaw>(), 24);
+    debug_assert_eq!(size_of::<KsCameraControlRaw>(), 36);
+
+    let property = KsPropertyRaw {
+        set: CAMERA_CONTROL_PROPERTY_SET,
+        id: property_id,
+        flags: PROPERTY_TYPE_SET,
+    };
+
+    let mut data = KsCameraControlRaw {
+        set: CAMERA_CONTROL_PROPERTY_SET,
+        id: property_id,
+        property_flags: PROPERTY_TYPE_SET,
+        value,
+        camera_flags: KS_CAMERA_CONTROL_FLAGS_MANUAL | KS_CAMERA_CONTROL_FLAGS_RELATIVE,
+        capabilities: 0,
+    };
+
+    let mut bytes_returned = 0u32;
+
+    unsafe {
+        control.KsProperty(
+            &property as *const KsPropertyRaw as *const KSIDENTIFIER,
+            size_of::<KsPropertyRaw>() as u32,
+            &mut data as *mut KsCameraControlRaw as *mut c_void,
+            size_of::<KsCameraControlRaw>() as u32,
+            &mut bytes_returned,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn stop_ks_relative(control: &IKsControl) -> windows::core::Result<()> {
+    let pan_result = set_ks_relative(control, PAN_RELATIVE_PROPERTY_ID, 0);
+
+    let tilt_result = set_ks_relative(control, TILT_RELATIVE_PROPERTY_ID, 0);
+
+    pan_result?;
+    tilt_result?;
+
+    Ok(())
+}
+
+struct KsRelativeStopGuard<'a> {
+    control: &'a IKsControl,
+}
+
+impl Drop for KsRelativeStopGuard<'_> {
+    fn drop(&mut self) {
+        let _ = stop_ks_relative(self.control);
+    }
 }
 
 fn set_relative(
@@ -357,27 +434,6 @@ fn set_relative(
     }
 
     Ok(())
-}
-
-fn stop_relative(control: &IAMCameraControl) -> windows::core::Result<()> {
-    let pan_result = set_relative(control, CameraControl_Pan, 0);
-
-    let tilt_result = set_relative(control, CameraControl_Tilt, 0);
-
-    pan_result?;
-    tilt_result?;
-
-    Ok(())
-}
-
-struct RelativeStopGuard<'a> {
-    control: &'a IAMCameraControl,
-}
-
-impl Drop for RelativeStopGuard<'_> {
-    fn drop(&mut self) {
-        let _ = stop_relative(self.control);
-    }
 }
 
 fn print_basic_support_details(control: &IKsControl, name: &str, property_id: u32) {
