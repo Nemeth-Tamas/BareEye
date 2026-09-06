@@ -1,11 +1,17 @@
 mod app;
 mod camera;
+mod vision;
 
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments: Vec<String> = std::env::args().collect();
     let debug = arguments.iter().any(|argument| argument == "--debug");
+
+    if arguments.iter().any(|argument| argument == "--vision-test") {
+        vision::smoke_test_model("models/yolo26n.onnx")?;
+        return Ok(());
+    }
 
     let devices = cameras::devices()?;
 
