@@ -22,6 +22,9 @@ use windows::Win32::System::Com::{
 };
 use windows::core::{GUID, Interface};
 
+#[windows::core::interface("2BA1785D-4D1B-44EF-85E8-C7F1D3F20184")]
+unsafe trait ICameraControlProbe: windows::core::IUnknown {}
+
 const CAMERA_CONTROL_PROPERTY_SET: GUID = GUID::from_u128(0xc6e13370_30ac_11d0_a18c_00a0c9118956);
 
 const PAN_PROPERTY_ID: u32 = 0;
@@ -304,16 +307,19 @@ pub fn movement_test(device: &Device) -> Result<(), Box<dyn Error>> {
     })?;
 
     let source: IMFMediaSource = unsafe { activation.ActivateObject()? };
-    let control = source.cast::<IKsControl>()?;
 
-    println!("IKsControl opened.");
-    println!("Probing SET buffer requirements without moving the camera.");
+    println!("Media Foundation source opened.");
 
-    println!();
-    probe_set_buffer_requirements(&control, "PAN_RELATIVE", PAN_RELATIVE_PROPERTY_ID);
-
-    println!();
-    probe_set_buffer_requirements(&control, "TILT_RELATIVE", TILT_RELATIVE_PROPERTY_ID);
+    match source.cast::<ICameraControlProbe>() {
+        Ok(_) => {
+            println!("ICameraControl: AVAILABLE");
+            println!("Dedicated relative PTZ interface is accessible.");
+        }
+        Err(error) => {
+            println!("ICameraControl: NOT AVAILABLE");
+            println!("QueryInterface failed: {error}");
+        }
+    }
 
     unsafe {
         let _ = source.Shutdown();
