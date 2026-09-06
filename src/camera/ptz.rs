@@ -26,6 +26,7 @@ impl Axis {
 
 enum WorkerCommand {
     Apply(Controls),
+    Relative(Axis, f32),
     ReadPosition,
     Shutdown,
 }
@@ -34,15 +35,15 @@ struct WorkerState {
     actual_pan: Option<f32>,
     actual_tilt: Option<f32>,
     actual_zoom: Option<f32>,
+    target_pan: f32,
+    target_tilt: f32,
+    target_zoom: f32,
     last_error: Option<String>,
     last_operation_ms: f32,
 }
 
 pub struct ManualController {
     capabilities: ControlCapabilities,
-    pan_target: f32,
-    tilt_target: f32,
-    zoom_target: f32,
     sender: std::sync::mpsc::Sender<WorkerCommand>,
     worker: Option<thread::JoinHandle<()>>,
     state: std::sync::Arc<std::sync::Mutex<WorkerState>>,
@@ -72,23 +73,27 @@ impl ManualController {
             actual_pan: controls.pan,
             actual_tilt: controls.tilt,
             actual_zoom: controls.zoom,
+            target_pan: pan_target,
+            target_tilt: tilt_target,
+            target_zoom: zoom_target,
             last_error: None,
             last_operation_ms: 0.0,
         }));
 
         let worker_state = std::sync::Arc::clone(&state);
+        let worker_capabilities = capabilities.clone();
         let (sender, receiver) = std::sync::mpsc::channel();
 
         let worker = thread::Builder::new()
             .name("bareeye-ptz".to_owned())
             .spawn(move || {
-                while let Ok(mut command) = receiver.recv() {
-                    while let Ok(newer_command) = receiver.try_recv() {
-                        command = newer_command;
-                    }
-
+                while let Ok(command) = receiver.recv() {
                     match command {
                         WorkerCommand::Apply(controls) => {
+                            let pan_target = controls.pan;
+                            let tilt_target = controls.tilt;
+                            let zoom_target = controls.zoom;
+
                             let started = Instant::now();
                             let result = cameras::apply_controls(&device, &controls);
                             let elapsed_ms = started.elapsed().as_secs_f32() * 1000.0;
@@ -98,7 +103,114 @@ impl ManualController {
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
 
                             state.last_operation_ms = elapsed_ms;
-                            state.last_error = result.err().map(|error| error.to_string());
+
+                            match result {
+                                Ok(()) => {
+                                    if let Some(value) = pan_target {
+                                        state.target_pan = value;
+                                    }
+
+                                    if let Some(value) = tilt_target {
+                                        state.target_tilt = value;
+                                    }
+
+                                    if let Some(value) = zoom_target {
+                                        state.target_zoom = value;
+                                    }
+
+                                    state.last_error = None;
+                                }
+                                Err(error) => {
+                                    state.last_error = Some(error.to_string());
+                                }
+                            }
+                        }
+                        WorkerCommand::Relative(axis, amount) => {
+                            let started = Instant::now();
+                            let read_result = cameras::read_controls(&device);
+
+                            match read_result {
+                                Ok(current) => {
+                                    let Some(range) = range_for_axis(&worker_capabilities, axis)
+                                    else {
+                                        let mut state = worker_state
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                                        state.last_operation_ms =
+                                            started.elapsed().as_secs_f32() * 1000.0;
+                                        state.last_error = Some(format!(
+                                            "{} is not supported by this camera.",
+                                            axis.label()
+                                        ));
+
+                                        continue;
+                                    };
+
+                                    let current_value = match axis {
+                                        Axis::Pan => current.pan,
+                                        Axis::Tilt => current.tilt,
+                                        Axis::Zoom => current.zoom,
+                                    }
+                                    .unwrap_or(range.default);
+
+                                    let target = snap_to_step(
+                                        (current_value + amount).clamp(range.min, range.max),
+                                        range,
+                                    );
+
+                                    let controls = match axis {
+                                        Axis::Pan => Controls {
+                                            pan: Some(target),
+                                            ..Default::default()
+                                        },
+                                        Axis::Tilt => Controls {
+                                            tilt: Some(target),
+                                            ..Default::default()
+                                        },
+                                        Axis::Zoom => Controls {
+                                            zoom: Some(target),
+                                            ..Default::default()
+                                        },
+                                    };
+
+                                    let apply_result = cameras::apply_controls(&device, &controls);
+
+                                    let mut state = worker_state
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                                    state.actual_pan = current.pan;
+                                    state.actual_tilt = current.tilt;
+                                    state.actual_zoom = current.zoom;
+                                    state.last_operation_ms =
+                                        started.elapsed().as_secs_f32() * 1000.0;
+
+                                    match apply_result {
+                                        Ok(()) => {
+                                            match axis {
+                                                Axis::Pan => state.target_pan = target,
+                                                Axis::Tilt => state.target_tilt = target,
+                                                Axis::Zoom => state.target_zoom = target,
+                                            }
+
+                                            state.last_error = None;
+                                        }
+                                        Err(error) => {
+                                            state.last_error = Some(error.to_string());
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    let mut state = worker_state
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                                    state.last_operation_ms =
+                                        started.elapsed().as_secs_f32() * 1000.0;
+                                    state.last_error = Some(error.to_string());
+                                }
+                            }
                         }
                         WorkerCommand::ReadPosition => {
                             let started = Instant::now();
@@ -131,9 +243,6 @@ impl ManualController {
 
         Ok(Self {
             capabilities,
-            pan_target,
-            tilt_target,
-            zoom_target,
             sender,
             worker: Some(worker),
             state,
@@ -141,15 +250,24 @@ impl ManualController {
     }
 
     pub fn pan_target(&self) -> f32 {
-        self.pan_target
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .target_pan
     }
 
     pub fn tilt_target(&self) -> f32 {
-        self.tilt_target
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .target_tilt
     }
 
     pub fn zoom_target(&self) -> f32 {
-        self.zoom_target
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .target_zoom
     }
 
     pub fn actual_pan(&self) -> Option<f32> {
@@ -196,43 +314,33 @@ impl ManualController {
         self.capabilities.zoom
     }
 
-    pub fn pan_by(&mut self, amount: f32) -> Result<(), String> {
-        self.set_axis_target(Axis::Pan, self.pan_target + amount)
+    pub fn pan_by(&self, amount: f32) -> Result<(), String> {
+        self.send(WorkerCommand::Relative(Axis::Pan, amount))
     }
 
-    pub fn tilt_by(&mut self, amount: f32) -> Result<(), String> {
-        self.set_axis_target(Axis::Tilt, self.tilt_target + amount)
+    pub fn tilt_by(&self, amount: f32) -> Result<(), String> {
+        self.send(WorkerCommand::Relative(Axis::Tilt, amount))
     }
 
-    pub fn zoom_by(&mut self, amount: f32) -> Result<(), String> {
-        self.set_axis_target(Axis::Zoom, self.zoom_target + amount)
+    pub fn zoom_by(&self, amount: f32) -> Result<(), String> {
+        self.send(WorkerCommand::Relative(Axis::Zoom, amount))
     }
 
-    pub fn set_zoom(&mut self, value: f32) -> Result<(), String> {
+    pub fn set_zoom(&self, value: f32) -> Result<(), String> {
         self.set_axis_target(Axis::Zoom, value)
     }
 
-    pub fn center(&mut self) -> Result<(), String> {
+    pub fn center(&self) -> Result<(), String> {
         let controls = Controls {
             pan: self.capabilities.pan.map(|range| range.default),
             tilt: self.capabilities.tilt.map(|range| range.default),
             ..Default::default()
         };
 
-        self.send(WorkerCommand::Apply(controls))?;
-
-        if let Some(range) = self.capabilities.pan {
-            self.pan_target = range.default;
-        }
-
-        if let Some(range) = self.capabilities.tilt {
-            self.tilt_target = range.default;
-        }
-
-        Ok(())
+        self.send(WorkerCommand::Apply(controls))
     }
 
-    pub fn wide(&mut self) -> Result<(), String> {
+    pub fn wide(&self) -> Result<(), String> {
         let Some(range) = self.capabilities.zoom else {
             return Ok(());
         };
@@ -240,7 +348,7 @@ impl ManualController {
         self.set_axis_target(Axis::Zoom, range.default)
     }
 
-    fn set_axis_target(&mut self, axis: Axis, value: f32) -> Result<(), String> {
+    fn set_axis_target(&self, axis: Axis, value: f32) -> Result<(), String> {
         let Some(range) = range_for_axis(&self.capabilities, axis) else {
             return Ok(());
         };
@@ -262,15 +370,7 @@ impl ManualController {
             },
         };
 
-        self.send(WorkerCommand::Apply(controls))?;
-
-        match axis {
-            Axis::Pan => self.pan_target = value,
-            Axis::Tilt => self.tilt_target = value,
-            Axis::Zoom => self.zoom_target = value,
-        }
-
-        Ok(())
+        self.send(WorkerCommand::Apply(controls))
     }
 
     fn send(&self, command: WorkerCommand) -> Result<(), String> {
