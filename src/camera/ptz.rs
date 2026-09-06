@@ -29,6 +29,7 @@ enum WorkerCommand {
     Apply(Controls),
     Relative(Axis, f32),
     TrackRelative { pan: f32, tilt: f32 },
+    TrackStep { pan: i32, tilt: i32 },
     ReadPosition,
     Shutdown,
 }
@@ -392,6 +393,23 @@ impl ManualController {
 
                             worker_tracking_pending.store(false, Ordering::Release);
                         }
+                        WorkerCommand::TrackStep { pan, tilt } => {
+                            let started = Instant::now();
+
+                            let result = crate::camera::relative_ptz::apply_tracking_step(
+                                &device, pan, tilt,
+                            );
+
+                            let mut state = worker_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                            state.last_operation_ms = started.elapsed().as_secs_f32() * 1000.0;
+
+                            state.last_error = result.err();
+
+                            worker_tracking_pending.store(false, Ordering::Release);
+                        }
                         WorkerCommand::ReadPosition => {
                             let started = Instant::now();
                             let result = cameras::read_controls(&device);
@@ -522,6 +540,23 @@ impl ManualController {
 
     pub fn tracking_busy(&self) -> bool {
         self.tracking_pending.load(Ordering::Acquire)
+    }
+
+    pub fn track_step(&self, pan: i32, tilt: i32) -> Result<bool, String> {
+        if pan == 0 && tilt == 0 {
+            return Ok(false);
+        }
+
+        if self.tracking_pending.swap(true, Ordering::AcqRel) {
+            return Ok(false);
+        }
+
+        if let Err(error) = self.send(WorkerCommand::TrackStep { pan, tilt }) {
+            self.tracking_pending.store(false, Ordering::Release);
+            return Err(error);
+        }
+
+        Ok(true)
     }
 
     pub fn zoom_by(&self, amount: f32) -> Result<(), String> {

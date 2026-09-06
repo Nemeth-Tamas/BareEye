@@ -44,6 +44,7 @@ struct KsPropertyRaw {
 }
 
 const CAMERA_CONTROL_FLAGS_RELATIVE: i32 = 0x0010;
+const ERROR_BUSY_HRESULT: i32 = 0x800700AAu32 as i32;
 
 const MEMBER_RANGES: u32 = 1;
 const MEMBER_STEPPED_RANGES: u32 = 2;
@@ -180,6 +181,77 @@ pub fn probe(device: &Device) -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+pub fn apply_tracking_step(device: &Device, pan: i32, tilt: i32) -> Result<bool, String> {
+    if pan == 0 && tilt == 0 {
+        return Ok(false);
+    }
+
+    let _com = ComGuard::init().map_err(|error| error.to_string())?;
+    let _mf = MfGuard::init().map_err(|error| error.to_string())?;
+
+    let activations = enumerate_activations().map_err(|error| error.to_string())?;
+
+    let mut matching_activation = None;
+
+    for activation in activations {
+        let symbolic_link = match read_string(
+            &activation,
+            &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
+        ) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+
+        if symbolic_link == device.id.0 {
+            matching_activation = Some(activation);
+            break;
+        }
+    }
+
+    let activation = matching_activation.ok_or_else(|| {
+        "Could not find the EagleEye Media Foundation activation object".to_owned()
+    })?;
+
+    let source: IMFMediaSource =
+        unsafe { activation.ActivateObject() }.map_err(|error| error.to_string())?;
+
+    let control = source
+        .cast::<IAMCameraControl>()
+        .map_err(|error| error.to_string())?;
+
+    let result = (|| -> Result<bool, String> {
+        let mut accepted = false;
+
+        if pan != 0 {
+            accepted |= try_relative_tracking_step(&control, CameraControl_Pan, pan)?;
+        }
+
+        if tilt != 0 {
+            accepted |= try_relative_tracking_step(&control, CameraControl_Tilt, tilt)?;
+        }
+
+        Ok(accepted)
+    })();
+
+    unsafe {
+        let _ = source.Shutdown();
+    }
+
+    result
+}
+
+fn try_relative_tracking_step(
+    control: &IAMCameraControl,
+    property: CameraControlProperty,
+    value: i32,
+) -> Result<bool, String> {
+    match set_relative(control, property, value) {
+        Ok(()) => Ok(true),
+        Err(error) if error.code().0 == ERROR_BUSY_HRESULT => Ok(false),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 pub fn movement_test(device: &Device) -> Result<(), Box<dyn Error>> {
