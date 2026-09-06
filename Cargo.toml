@@ -10,6 +10,7 @@ egui-cameras = "0.3.2"
 ort = { version = "=2.0.0-rc.13", features = ["cuda"] }
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
+    "Win32_Media_DirectShow",
     "Win32_Media_KernelStreaming",
     "Win32_Media_MediaFoundation",
     "Win32_System_Com",
