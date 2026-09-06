@@ -344,15 +344,19 @@ fn run_detector(
         .try_extract_tensor::<f32>()
         .map_err(|error| format!("Could not read {} output: {error}", kind.label()))?;
 
-    if shape.as_ref() != [1, 300, 6] {
+    let shape = shape.as_ref();
+
+    if shape.len() != 3 || shape[0] != 1 || shape[1] != 300 || shape[2] < 6 {
         return Err(format!(
             "Unexpected {} output shape: {shape:?}",
             kind.label()
         ));
     }
 
+    let row_width = shape[2] as usize;
+
     Ok((
-        decode_detections(data, letterbox, kind, confidence_threshold),
+        decode_detections(data, letterbox, kind, confidence_threshold, row_width),
         inference_ms,
     ))
 }
@@ -419,10 +423,11 @@ fn decode_detections(
     letterbox: &Letterbox,
     kind: DetectionKind,
     confidence_threshold: f32,
+    row_width: usize,
 ) -> Vec<Detection> {
     let mut detections = Vec::new();
 
-    for detection in data.chunks_exact(6) {
+    for detection in data.chunks_exact(row_width) {
         let confidence = detection[4];
         let class_id = detection[5].round() as i32;
 

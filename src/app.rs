@@ -1,6 +1,6 @@
 use crate::camera::ptz::ManualController;
 use crate::camera::{PreviewInfo, StreamTelemetry};
-use crate::vision::{Detection, VisionInput, VisionWorker};
+use crate::vision::{Detection, DetectionKind, VisionInput, VisionWorker};
 use eframe::egui;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
