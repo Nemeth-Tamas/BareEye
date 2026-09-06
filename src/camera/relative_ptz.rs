@@ -368,13 +368,15 @@ fn set_ks_relative(
     property_id: u32,
     value: i32,
 ) -> windows::core::Result<()> {
-    debug_assert_eq!(size_of::<KsPropertyRaw>(), 24);
     debug_assert_eq!(size_of::<KsCameraControlRaw>(), 36);
 
-    let property = KsPropertyRaw {
+    let property = KsCameraControlRaw {
         set: CAMERA_CONTROL_PROPERTY_SET,
         id: property_id,
-        flags: PROPERTY_TYPE_SET,
+        property_flags: PROPERTY_TYPE_SET,
+        value: 0,
+        camera_flags: 0,
+        capabilities: 0,
     };
 
     let mut data = KsCameraControlRaw {
@@ -390,8 +392,8 @@ fn set_ks_relative(
 
     unsafe {
         control.KsProperty(
-            &property as *const KsPropertyRaw as *const KSIDENTIFIER,
-            size_of::<KsPropertyRaw>() as u32,
+            &property as *const KsCameraControlRaw as *const KSIDENTIFIER,
+            size_of::<KsCameraControlRaw>() as u32,
             &mut data as *mut KsCameraControlRaw as *mut c_void,
             size_of::<KsCameraControlRaw>() as u32,
             &mut bytes_returned,
