@@ -10,6 +10,7 @@
 * [x] Read current pan, tilt, and zoom positions where supported
 * [x] Implement absolute PTZ control
 * [ ] Investigate relative / velocity PTZ control support
+* [ ] Test whether the EagleEye accepts sub-degree PTZ positions despite its advertised 1° step
 * [ ] Implement safe PTZ limit handling
 
 ## 2. Application foundation
@@ -20,6 +21,8 @@
 * [x] Add camera status and PTZ diagnostics
 * [ ] Add mouse-controlled manual pan, tilt, and zoom
 * [x] Add keyboard controls for development and recovery
+* [ ] Add selectable 5° manual PTZ stepping
+* [ ] Add selectable 1° fine PTZ stepping for high-zoom control
 * [ ] Keep capture, vision, control, and UI work isolated from each other
 
 ## 3. Vision pipeline
@@ -45,6 +48,8 @@
 ## 5. PTZ tracking controller
 
 * [ ] Convert image-space target error into pan and tilt commands
+* [ ] Maintain sub-degree internal PTZ targets and accumulate fractional corrections
+* [ ] Quantize physical PTZ commands to the camera's actual supported hardware step
 * [ ] Add smoothing and dead zones
 * [ ] Add target-motion prediction
 * [ ] Add zoom-dependent control sensitivity
