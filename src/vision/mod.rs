@@ -46,7 +46,7 @@ pub fn smoke_test_model(model_path: impl AsRef<Path>) -> Result<(), Box<dyn Erro
 
     let inference_elapsed = started.elapsed();
 
-    if outputs.is_empty() {
+    if outputs.len() == 0 {
         return Err(io::Error::other("YOLO model returned no outputs").into());
     }
 
