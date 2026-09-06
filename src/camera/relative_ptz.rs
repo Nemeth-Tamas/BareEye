@@ -261,17 +261,57 @@ fn print_basic_support_details(control: &IKsControl, name: &str, property_id: u3
 
             MEMBER_RANGES => {
                 for member_index in 0..header.members_count {
-                    let Some(range) = read_unaligned::<KsBoundsLongRaw>(bytes, offset) else {
-                        println!("    Range {member_index}: truncated");
+                    let member_size = header.members_size as usize;
+                    let Some(member_end) = offset.checked_add(member_size) else {
+                        println!("    Range {member_index}: invalid size");
                         return;
                     };
 
-                    println!(
-                        "    Range {member_index}: min={} max={}",
-                        range.signed_minimum, range.signed_maximum
-                    );
+                    if member_end > bytes.len() {
+                        println!("    Range {member_index}: truncated");
+                        return;
+                    }
 
-                    offset += header.members_size as usize;
+                    let member_bytes = &bytes[offset..member_end];
+
+                    print!("    Raw 32-bit words:");
+
+                    for word in member_bytes.chunks_exact(4) {
+                        let value = i32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+
+                        print!(" {value}");
+                    }
+
+                    println!();
+
+                    if member_size == size_of::<KsSteppingLongRaw>() {
+                        let Some(range) = read_unaligned::<KsSteppingLongRaw>(bytes, offset) else {
+                            println!("    16-byte range {member_index}: truncated");
+                            return;
+                        };
+
+                        println!(
+                            "    16-byte range decoded as stepping layout: min={} max={} step={} reserved={}",
+                            range.signed_minimum,
+                            range.signed_maximum,
+                            range.stepping_delta,
+                            range.reserved
+                        );
+                    } else if member_size >= size_of::<KsBoundsLongRaw>() {
+                        let Some(range) = read_unaligned::<KsBoundsLongRaw>(bytes, offset) else {
+                            println!("    Range {member_index}: truncated");
+                            return;
+                        };
+
+                        println!(
+                            "    Standard range {member_index}: min={} max={}",
+                            range.signed_minimum, range.signed_maximum
+                        );
+                    } else {
+                        println!("    Range {member_index}: unexpected member size {member_size}");
+                    }
+
+                    offset = member_end;
                 }
             }
 
