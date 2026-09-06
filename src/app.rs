@@ -14,13 +14,9 @@ const SLOW_DISPLAY_GAP: Duration = Duration::from_millis(45);
 const SLOW_UI_GAP: Duration = Duration::from_millis(50);
 const PTZ_BUTTON_COOLDOWN: Duration = Duration::from_millis(200);
 
-const TRACKING_COMMAND_INTERVAL: Duration = Duration::from_millis(50);
-const TRACKING_DEADZONE_X: f32 = 0.04;
-const TRACKING_DEADZONE_Y: f32 = 0.05;
-
-const TRACKING_NEAR_ERROR: f32 = 0.10;
-const TRACKING_MEDIUM_ERROR: f32 = 0.20;
-const TRACKING_FAR_ERROR: f32 = 0.35;
+const TRACKING_COMMAND_INTERVAL: Duration = Duration::from_millis(120);
+const TRACKING_DEADZONE_X: f32 = 0.06;
+const TRACKING_DEADZONE_Y: f32 = 0.10;
 
 pub fn run(
     camera: cameras::Camera,
@@ -96,10 +92,16 @@ impl SelectedTarget {
         let current_width = self.detection.x2 - self.detection.x1;
         let current_height = self.detection.y2 - self.detection.y1;
 
-        let maximum_distance = current_width
-            .hypot(current_height)
-            .mul_add(0.75, 0.0)
-            .max(80.0);
+        let maximum_distance = match self.detection.kind {
+            DetectionKind::Face => current_width
+                .hypot(current_height)
+                .mul_add(0.45, 0.0)
+                .max(60.0),
+            DetectionKind::Person => current_width
+                .hypot(current_height)
+                .mul_add(0.75, 0.0)
+                .max(80.0),
+        };
 
         let mut best: Option<(&Detection, f32)> = None;
 
@@ -501,6 +503,7 @@ struct BareEyeApp {
     tracking_enabled: bool,
     last_tracking_command_at: Option<Instant>,
     last_tracking_vision_frame: u64,
+    tracking_prefer_pan: bool,
     debug: bool,
     ptz_error: Option<String>,
     last_ptz_button_at: Option<Instant>,
@@ -541,6 +544,7 @@ impl BareEyeApp {
             tracking_enabled: false,
             last_tracking_command_at: None,
             last_tracking_vision_frame: 0,
+            tracking_prefer_pan: true,
             debug,
             ptz_error: None,
             last_ptz_button_at: None,
@@ -582,27 +586,11 @@ impl BareEyeApp {
     }
 
     fn relative_tracking_step(error: f32, deadzone: f32) -> i32 {
-        let magnitude = error.abs();
-
-        if magnitude <= deadzone {
+        if error.abs() <= deadzone {
             return 0;
         }
 
-        let step = if magnitude < TRACKING_NEAR_ERROR {
-            1
-        } else if magnitude < TRACKING_MEDIUM_ERROR {
-            2
-        } else if magnitude < TRACKING_FAR_ERROR {
-            3
-        } else {
-            4
-        };
-
-        if error.is_sign_positive() {
-            -step
-        } else {
-            step
-        }
+        if error.is_sign_positive() { -1 } else { 1 }
     }
 
     fn update_tracking(&mut self, vision_frame: u64) {
@@ -648,11 +636,15 @@ impl BareEyeApp {
         let tilt_step = Self::relative_tracking_step(error_y, TRACKING_DEADZONE_Y);
 
         let (pan_command, tilt_command) = if pan_step != 0 && tilt_step != 0 {
-            if error_x.abs() >= error_y.abs() {
+            let command = if self.tracking_prefer_pan {
                 (pan_step, 0)
             } else {
                 (0, tilt_step)
-            }
+            };
+
+            self.tracking_prefer_pan = !self.tracking_prefer_pan;
+
+            command
         } else {
             (pan_step, tilt_step)
         };
