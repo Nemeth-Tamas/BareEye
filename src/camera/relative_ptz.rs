@@ -10,7 +10,7 @@ use windows::Win32::Media::DirectShow::{
     CameraControl_Flags_Manual, CameraControl_Pan, CameraControl_Tilt, CameraControlProperty,
     IAMCameraControl,
 };
-use windows::Win32::Media::KernelStreaming::{IKsControl, KSIDENTIFIER};
+use windows::Win32::Media::KernelStreaming::{IKsControl, IKsTopologyInfo, KSIDENTIFIER};
 use windows::Win32::Media::MediaFoundation::{
     IMFActivate, IMFMediaSource, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
@@ -20,10 +20,12 @@ use windows::Win32::Media::MediaFoundation::{
 use windows::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoTaskMemFree, CoUninitialize,
 };
-use windows::core::{GUID, Interface};
+use windows::core::{GUID, HRESULT, IUnknown, Interface};
 
-#[windows::core::interface("2BA1785D-4D1B-44EF-85E8-C7F1D3F20184")]
-unsafe trait ICameraControlProbe: windows::core::IUnknown {}
+const ICAMERA_CONTROL_IID: GUID = GUID::from_u128(0x2ba1785d_4d1b_44ef_85e8_c7f1d3f20184);
+
+const CAMERA_CONTROL_PUT_PAN_RELATIVE_SLOT: usize = 40;
+const CAMERA_CONTROL_PUT_TILT_RELATIVE_SLOT: usize = 42;
 
 const CAMERA_CONTROL_PROPERTY_SET: GUID = GUID::from_u128(0xc6e13370_30ac_11d0_a18c_00a0c9118956);
 
@@ -276,8 +278,8 @@ pub fn movement_test(device: &Device) -> Result<(), Box<dyn Error>> {
     let _mf = MfGuard::init()?;
 
     println!();
-    println!("BareEye true KS relative PTZ movement test");
-    println!("==========================================");
+    println!("BareEye topology relative PTZ movement test");
+    println!("===========================================");
     println!("Device: {}", device.name);
 
     let activations = enumerate_activations()?;
@@ -310,22 +312,149 @@ pub fn movement_test(device: &Device) -> Result<(), Box<dyn Error>> {
 
     println!("Media Foundation source opened.");
 
-    match source.cast::<ICameraControlProbe>() {
-        Ok(_) => {
-            println!("ICameraControl: AVAILABLE");
-            println!("Dedicated relative PTZ interface is accessible.");
-        }
-        Err(error) => {
-            println!("ICameraControl: NOT AVAILABLE");
-            println!("QueryInterface failed: {error}");
+    let topology = source.cast::<IKsTopologyInfo>()?;
+
+    let node_count = unsafe { topology.NumNodes()? };
+
+    println!("Topology nodes: {node_count}");
+
+    let mut camera_control = None;
+
+    for node_id in 0..node_count {
+        let node_type = unsafe { topology.get_NodeType(node_id)? };
+
+        println!("Node {node_id}: {node_type:?}");
+
+        let mut raw = std::ptr::null_mut();
+
+        let result =
+            unsafe { topology.CreateNodeInstance(node_id, &ICAMERA_CONTROL_IID, &mut raw) };
+
+        match result {
+            Ok(()) if !raw.is_null() => {
+                println!("  ICameraControl: FOUND");
+
+                let control = unsafe { IUnknown::from_raw(raw) };
+
+                camera_control = Some(control);
+                break;
+            }
+            Ok(()) => {
+                println!("  ICameraControl: null interface");
+            }
+            Err(_) => {
+                println!("  ICameraControl: unavailable");
+            }
         }
     }
+
+    let control = camera_control.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "No topology node exposed ICameraControl",
+        )
+    })?;
+
+    println!();
+    println!("ICameraControl topology node acquired.");
+    println!("Testing true relative motor commands.");
+
+    let stop_guard = RawRelativeStopGuard { control: &control };
+
+    raw_relative_stop(&control)?;
+
+    thread::sleep(Duration::from_millis(500));
+
+    run_raw_relative_step(&control, "PAN +2", CAMERA_CONTROL_PUT_PAN_RELATIVE_SLOT, 2)?;
+
+    run_raw_relative_step(&control, "PAN -2", CAMERA_CONTROL_PUT_PAN_RELATIVE_SLOT, -2)?;
+
+    run_raw_relative_step(
+        &control,
+        "TILT +2",
+        CAMERA_CONTROL_PUT_TILT_RELATIVE_SLOT,
+        2,
+    )?;
+
+    run_raw_relative_step(
+        &control,
+        "TILT -2",
+        CAMERA_CONTROL_PUT_TILT_RELATIVE_SLOT,
+        -2,
+    )?;
+
+    raw_relative_stop(&control)?;
+
+    drop(stop_guard);
 
     unsafe {
         let _ = source.Shutdown();
     }
 
+    println!();
+    println!("Movement test complete.");
+
     Ok(())
+}
+
+type PutRelativeFn = unsafe extern "system" fn(*mut c_void, i32, i32) -> HRESULT;
+
+fn call_raw_relative(control: &IUnknown, slot: usize, value: i32) -> windows::core::Result<()> {
+    let raw = control.as_raw();
+
+    let vtable = unsafe { *(raw as *const *const *const c_void) };
+
+    let function_pointer = unsafe { *vtable.add(slot) };
+
+    let function: PutRelativeFn = unsafe { std::mem::transmute(function_pointer) };
+
+    let result = unsafe { function(raw, value, CameraControl_Flags_Manual.0) };
+
+    result.ok()
+}
+
+fn run_raw_relative_step(
+    control: &IUnknown,
+    label: &str,
+    slot: usize,
+    value: i32,
+) -> windows::core::Result<()> {
+    println!();
+    println!("{label}");
+    println!("  START");
+
+    call_raw_relative(control, slot, value)?;
+
+    thread::sleep(Duration::from_millis(500));
+
+    println!("  STOP");
+
+    call_raw_relative(control, slot, 0)?;
+
+    thread::sleep(Duration::from_millis(700));
+
+    Ok(())
+}
+
+fn raw_relative_stop(control: &IUnknown) -> windows::core::Result<()> {
+    let pan_result = call_raw_relative(control, CAMERA_CONTROL_PUT_PAN_RELATIVE_SLOT, 0);
+
+    let tilt_result = call_raw_relative(control, CAMERA_CONTROL_PUT_TILT_RELATIVE_SLOT, 0);
+
+    pan_result?;
+    tilt_result?;
+
+    Ok(())
+}
+
+struct RawRelativeStopGuard<'a> {
+    control: &'a IUnknown,
+}
+
+impl Drop for RawRelativeStopGuard<'_> {
+    fn drop(&mut self) {
+        let _ = raw_relative_stop(self.control);
+    }
 }
 
 fn probe_set_buffer_requirements(control: &IKsControl, label: &str, property_id: u32) {

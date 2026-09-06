@@ -8,7 +8,6 @@ cameras = { version = "0.3.2", features = ["controls"] }
 eframe = "=0.34.3"
 egui-cameras = "0.3.2"
 ort = { version = "=2.0.0-rc.13", features = ["cuda"] }
-windows-core = "0.62.2"
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Media_DirectShow",
