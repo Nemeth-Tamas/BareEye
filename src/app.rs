@@ -1,5 +1,6 @@
 use crate::camera::ptz::ManualController;
 use crate::camera::{PreviewInfo, StreamTelemetry};
+use crate::vision::{VisionInput, VisionWorker};
 use eframe::egui;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
@@ -19,6 +20,9 @@ pub fn run(
     ptz: ManualController,
     debug: bool,
 ) -> eframe::Result<()> {
+    let vision = VisionWorker::spawn("models/yolo26n.onnx");
+    let vision_input = vision.input();
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
@@ -30,11 +34,15 @@ pub fn run(
         "BareEye",
         native_options,
         Box::new(move |creation_context| {
-            let (stream, telemetry) =
-                spawn_camera_stream(camera, creation_context.egui_ctx.clone(), &info);
+            let (stream, telemetry) = spawn_camera_stream(
+                camera,
+                creation_context.egui_ctx.clone(),
+                &info,
+                vision_input,
+            );
 
             Ok(Box::new(BareEyeApp::new(
-                stream, telemetry, info, ptz, debug,
+                stream, telemetry, info, ptz, vision, debug,
             )))
         }),
     )
@@ -56,7 +64,7 @@ struct PreviewWorkerStats {
 struct PreviewStream {
     pump: egui_cameras::Pump,
     decoder: std::thread::JoinHandle<()>,
-    queue: Arc<Mutex<VecDeque<Result<egui::ColorImage, String>>>>,
+    queue: Arc<Mutex<VecDeque<Arc<egui::ColorImage>>>>,
     worker_stats: Arc<Mutex<PreviewWorkerStats>>,
     texture: Option<egui::TextureHandle>,
     name: String,
@@ -80,8 +88,6 @@ impl PreviewStream {
         let Some(image) = next_image else {
             return Ok(false);
         };
-
-        let image = image?;
 
         match &mut self.texture {
             Some(texture) => {
@@ -191,6 +197,7 @@ fn spawn_camera_stream(
     camera: cameras::Camera,
     repaint_context: egui::Context,
     info: &PreviewInfo,
+    vision_input: VisionInput,
 ) -> (PreviewStream, Arc<Mutex<StreamTelemetry>>) {
     let queue = Arc::new(Mutex::new(VecDeque::with_capacity(PREVIEW_QUEUE_CAPACITY)));
     let decoder_queue = Arc::clone(&queue);
@@ -242,12 +249,14 @@ fn spawn_camera_stream(
                 }
 
                 let decoded = match decoded {
-                    Ok(image) => image,
+                    Ok(image) => Arc::new(image),
                     Err(_) => {
                         repaint_context.request_repaint();
                         continue;
                     }
                 };
+
+                vision_input.submit(Arc::clone(&decoded));
 
                 let dropped = {
                     let mut queue = decoder_queue.lock().unwrap_or_else(PoisonError::into_inner);
@@ -258,7 +267,7 @@ fn spawn_camera_stream(
                         queue.pop_front();
                     }
 
-                    queue.push_back(Ok(decoded));
+                    queue.push_back(decoded);
 
                     dropped
                 };
@@ -311,6 +320,7 @@ struct BareEyeApp {
     telemetry: Arc<Mutex<StreamTelemetry>>,
     info: PreviewInfo,
     ptz: ManualController,
+    vision: VisionWorker,
     debug: bool,
     ptz_error: Option<String>,
     last_ptz_button_at: Option<Instant>,
@@ -338,6 +348,7 @@ impl BareEyeApp {
         telemetry: Arc<Mutex<StreamTelemetry>>,
         info: PreviewInfo,
         ptz: ManualController,
+        vision: VisionWorker,
         debug: bool,
     ) -> Self {
         Self {
@@ -345,6 +356,7 @@ impl BareEyeApp {
             telemetry,
             info,
             ptz,
+            vision,
             debug,
             ptz_error: None,
             last_ptz_button_at: None,
@@ -516,6 +528,8 @@ impl eframe::App for BareEyeApp {
             .unwrap_or_else(PoisonError::into_inner)
             .snapshot();
 
+        let vision = self.vision.snapshot();
+
         let buffered_frames = self
             .stream
             .as_ref()
@@ -551,11 +565,28 @@ impl eframe::App for BareEyeApp {
 
                 ui.label(format!("Display: {:.1} FPS", self.measured_fps));
 
+                ui.separator();
+
+                if vision.ready {
+                    ui.label(format!(
+                        "Vision: {} person(s) | {:.1} ms prep + {:.1} ms CUDA",
+                        vision.detections.len(),
+                        vision.preprocess_ms,
+                        vision.inference_ms
+                    ));
+                } else {
+                    ui.label("Vision: starting...");
+                }
+
                 if self.debug {
                     ui.separator();
                     ui.strong("DEBUG");
                 }
             });
+
+            if let Some(error) = &vision.last_error {
+                ui.colored_label(egui::Color32::RED, format!("Vision error: {error}"));
+            }
 
             if self.debug {
                 ui.horizontal(|ui| {
@@ -580,6 +611,17 @@ impl eframe::App for BareEyeApp {
                     ui.separator();
 
                     ui.label(format!("Format anomalies: {}", telemetry.format_anomalies));
+
+                    ui.separator();
+
+                    ui.label(format!("Vision processed: {}", vision.processed_frames));
+
+                    ui.separator();
+
+                    ui.label(format!(
+                        "Vision stale frames replaced: {}",
+                        vision.replaced_frames
+                    ));
                 });
 
                 ui.horizontal(|ui| {

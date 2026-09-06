@@ -1,3 +1,7 @@
+mod worker;
+
+pub use worker::{VisionInput, VisionSnapshot, VisionWorker};
+
 use ort::ep::ExecutionProvider;
 use ort::session::Session;
 use ort::value::Tensor;
