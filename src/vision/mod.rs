@@ -1,6 +1,6 @@
 mod worker;
 
-pub use worker::{Detection, VisionInput, VisionWorker};
+pub use worker::{Detection, DetectionKind, VisionInput, VisionWorker};
 
 use ort::ep::ExecutionProvider;
 use ort::session::Session;

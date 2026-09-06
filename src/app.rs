@@ -20,7 +20,7 @@ pub fn run(
     ptz: ManualController,
     debug: bool,
 ) -> eframe::Result<()> {
-    let vision = VisionWorker::spawn("models/yolo26n.onnx");
+    let vision = VisionWorker::spawn("models/yolo26n.onnx", "models/yolov8n-face.onnx");
     let vision_input = vision.input();
 
     let native_options = eframe::NativeOptions {
@@ -129,11 +129,15 @@ impl PreviewStream {
         let scale_x = image_rect.width() / texture_size[0] as f32;
         let scale_y = image_rect.height() / texture_size[1] as f32;
 
-        let color = egui::Color32::from_rgb(0, 255, 0);
-        let stroke = egui::Stroke::new(2.0, color);
         let painter = ui.painter();
 
         for detection in detections {
+            let color = match detection.kind {
+                DetectionKind::Person => egui::Color32::from_rgb(0, 255, 0),
+                DetectionKind::Face => egui::Color32::from_rgb(0, 200, 255),
+            };
+
+            let stroke = egui::Stroke::new(2.0_f32, color);
             let left = image_rect.left() + detection.x1 * scale_x;
             let top = image_rect.top() + detection.y1 * scale_y;
             let right = image_rect.left() + detection.x2 * scale_x;
@@ -152,7 +156,11 @@ impl PreviewStream {
             painter.text(
                 top_left + egui::vec2(4.0, 4.0),
                 egui::Align2::LEFT_TOP,
-                format!("person {:.0}%", detection.confidence * 100.0),
+                format!(
+                    "{} {:.0}%",
+                    detection.kind.label(),
+                    detection.confidence * 100.0
+                ),
                 egui::FontId::proportional(16.0),
                 color,
             );
@@ -564,6 +572,18 @@ impl eframe::App for BareEyeApp {
 
         let vision = self.vision.snapshot();
 
+        let person_count = vision
+            .detections
+            .iter()
+            .filter(|detection| detection.kind == DetectionKind::Person)
+            .count();
+
+        let face_count = vision
+            .detections
+            .iter()
+            .filter(|detection| detection.kind == DetectionKind::Face)
+            .count();
+
         let buffered_frames = self
             .stream
             .as_ref()
@@ -603,10 +623,10 @@ impl eframe::App for BareEyeApp {
 
                 if vision.ready {
                     ui.label(format!(
-                        "Vision: {} person(s) | {:.1} ms prep + {:.1} ms CUDA",
-                        vision.detections.len(),
+                        "Vision: {person_count} person(s) | {face_count} face(s) | {:.1} ms prep + {:.1}/{:.1} ms CUDA",
                         vision.preprocess_ms,
-                        vision.inference_ms
+                        vision.inference_ms,
+                        vision.face_inference_ms
                     ));
                 } else {
                     ui.label("Vision: starting...");

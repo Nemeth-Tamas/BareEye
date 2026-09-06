@@ -9,8 +9,9 @@ use std::time::Instant;
 
 const MODEL_WIDTH: usize = 640;
 const MODEL_HEIGHT: usize = 640;
-const PERSON_CLASS_ID: i32 = 0;
-const CONFIDENCE_THRESHOLD: f32 = 0.25;
+const DETECTOR_CLASS_ID: i32 = 0;
+const PERSON_CONFIDENCE_THRESHOLD: f32 = 0.25;
+const FACE_CONFIDENCE_THRESHOLD: f32 = 0.25;
 const LETTERBOX_VALUE: f32 = 114.0 / 255.0;
 
 enum VisionSignal {
@@ -18,8 +19,24 @@ enum VisionSignal {
     Shutdown,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DetectionKind {
+    Person,
+    Face,
+}
+
+impl DetectionKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Person => "person",
+            Self::Face => "face",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Detection {
+    pub kind: DetectionKind,
     pub x1: f32,
     pub y1: f32,
     pub x2: f32,
@@ -33,6 +50,7 @@ pub struct VisionSnapshot {
     pub detections: Vec<Detection>,
     pub preprocess_ms: f32,
     pub inference_ms: f32,
+    pub face_inference_ms: f32,
     pub processed_frames: u64,
     pub replaced_frames: u64,
     pub last_error: Option<String>,
@@ -80,8 +98,12 @@ pub struct VisionWorker {
 }
 
 impl VisionWorker {
-    pub fn spawn(model_path: impl Into<PathBuf>) -> Self {
-        let model_path = model_path.into();
+    pub fn spawn(
+        person_model_path: impl Into<PathBuf>,
+        face_model_path: impl Into<PathBuf>,
+    ) -> Self {
+        let person_model_path = person_model_path.into();
+        let face_model_path = face_model_path.into();
 
         let shared = Arc::new(Shared {
             latest_frame: Mutex::new(None),
@@ -95,7 +117,7 @@ impl VisionWorker {
         let worker = thread::Builder::new()
             .name("bareeye-vision".to_owned())
             .spawn(move || {
-                run_worker(model_path, worker_shared, receiver);
+                run_worker(person_model_path, face_model_path, worker_shared, receiver);
             })
             .expect("failed to start BareEye vision worker");
 
@@ -140,47 +162,65 @@ struct Letterbox {
     source_height: usize,
 }
 
-fn run_worker(model_path: PathBuf, shared: Arc<Shared>, receiver: mpsc::Receiver<VisionSignal>) {
-    let mut builder = match Session::builder() {
-        Ok(builder) => builder,
+fn create_cuda_session(model_path: &PathBuf, label: &str) -> Result<Session, String> {
+    let mut builder =
+        Session::builder().map_err(|error| format!("{label} session builder failed: {error}"))?;
+
+    ort::ep::CUDA::default()
+        .register(&mut builder)
+        .map_err(|error| format!("{label} CUDA provider failed: {error}"))?;
+
+    builder.commit_from_file(model_path).map_err(|error| {
+        format!(
+            "Could not load {label} model {}: {error}",
+            model_path.display()
+        )
+    })
+}
+
+fn warmup_session(session: &mut Session, label: &str) -> Result<(), String> {
+    let input = Tensor::from_array((
+        [1usize, 3, MODEL_HEIGHT, MODEL_WIDTH],
+        vec![0.0_f32; 3 * MODEL_HEIGHT * MODEL_WIDTH],
+    ))
+    .map_err(|error| format!("Could not build {label} warm-up tensor: {error}"))?;
+
+    session
+        .run(ort::inputs![input])
+        .map_err(|error| format!("{label} warm-up failed: {error}"))?;
+
+    Ok(())
+}
+
+fn run_worker(
+    person_model_path: PathBuf,
+    face_model_path: PathBuf,
+    shared: Arc<Shared>,
+    receiver: mpsc::Receiver<VisionSignal>,
+) {
+    let mut person_session = match create_cuda_session(&person_model_path, "person") {
+        Ok(session) => session,
         Err(error) => {
-            set_error(
-                &shared,
-                format!("ONNX Runtime session builder failed: {error}"),
-            );
+            set_error(&shared, error);
             return;
         }
     };
 
-    if let Err(error) = ort::ep::CUDA::default().register(&mut builder) {
-        set_error(&shared, format!("CUDA execution provider failed: {error}"));
+    let mut face_session = match create_cuda_session(&face_model_path, "face") {
+        Ok(session) => session,
+        Err(error) => {
+            set_error(&shared, error);
+            return;
+        }
+    };
+
+    if let Err(error) = warmup_session(&mut person_session, "person") {
+        set_error(&shared, error);
         return;
     }
 
-    let mut session = match builder.commit_from_file(&model_path) {
-        Ok(session) => session,
-        Err(error) => {
-            set_error(
-                &shared,
-                format!("Could not load {}: {error}", model_path.display()),
-            );
-            return;
-        }
-    };
-
-    let warmup = match Tensor::from_array((
-        [1usize, 3, MODEL_HEIGHT, MODEL_WIDTH],
-        vec![0.0_f32; 3 * MODEL_HEIGHT * MODEL_WIDTH],
-    )) {
-        Ok(input) => input,
-        Err(error) => {
-            set_error(&shared, format!("Could not build warm-up tensor: {error}"));
-            return;
-        }
-    };
-
-    if let Err(error) = session.run(ort::inputs![warmup]) {
-        set_error(&shared, format!("Vision warm-up failed: {error}"));
+    if let Err(error) = warmup_session(&mut face_session, "face") {
+        set_error(&shared, error);
         return;
     }
 
@@ -207,14 +247,19 @@ fn run_worker(model_path: PathBuf, shared: Arc<Shared>, receiver: mpsc::Receiver
                     continue;
                 };
 
-                process_frame(&mut session, &shared, &frame);
+                process_frame(&mut person_session, &mut face_session, &shared, &frame);
             }
             VisionSignal::Shutdown => break,
         }
     }
 }
 
-fn process_frame(session: &mut Session, shared: &Arc<Shared>, frame: &ColorImage) {
+fn process_frame(
+    person_session: &mut Session,
+    face_session: &mut Session,
+    shared: &Arc<Shared>,
+    frame: &ColorImage,
+) {
     let preprocess_started = Instant::now();
 
     let (input_data, letterbox) = match preprocess(frame) {
@@ -227,45 +272,37 @@ fn process_frame(session: &mut Session, shared: &Arc<Shared>, frame: &ColorImage
 
     let preprocess_ms = preprocess_started.elapsed().as_secs_f32() * 1000.0;
 
-    let input = match Tensor::from_array(([1usize, 3, MODEL_HEIGHT, MODEL_WIDTH], input_data)) {
-        Ok(input) => input,
+    let face_input_data = input_data.clone();
+
+    let (mut detections, inference_ms) = match run_detector(
+        person_session,
+        input_data,
+        &letterbox,
+        DetectionKind::Person,
+        PERSON_CONFIDENCE_THRESHOLD,
+    ) {
+        Ok(result) => result,
         Err(error) => {
-            set_error(shared, format!("Could not build inference tensor: {error}"));
+            set_error(shared, error);
             return;
         }
     };
 
-    let inference_started = Instant::now();
-
-    let outputs = match session.run(ort::inputs![input]) {
-        Ok(outputs) => outputs,
+    let (face_detections, face_inference_ms) = match run_detector(
+        face_session,
+        face_input_data,
+        &letterbox,
+        DetectionKind::Face,
+        FACE_CONFIDENCE_THRESHOLD,
+    ) {
+        Ok(result) => result,
         Err(error) => {
-            set_error(shared, format!("ONNX inference failed: {error}"));
+            set_error(shared, error);
             return;
         }
     };
 
-    let inference_ms = inference_started.elapsed().as_secs_f32() * 1000.0;
-
-    if outputs.len() == 0 {
-        set_error(shared, "YOLO returned no outputs".to_owned());
-        return;
-    }
-
-    let (shape, data) = match outputs[0].try_extract_tensor::<f32>() {
-        Ok(output) => output,
-        Err(error) => {
-            set_error(shared, format!("Could not read YOLO output: {error}"));
-            return;
-        }
-    };
-
-    if shape.as_ref() != [1, 300, 6] {
-        set_error(shared, format!("Unexpected YOLO output shape: {shape:?}"));
-        return;
-    }
-
-    let detections = decode_person_detections(data, &letterbox);
+    detections.extend(face_detections);
 
     let mut snapshot = shared
         .snapshot
@@ -276,8 +313,48 @@ fn process_frame(session: &mut Session, shared: &Arc<Shared>, frame: &ColorImage
     snapshot.detections = detections;
     snapshot.preprocess_ms = preprocess_ms;
     snapshot.inference_ms = inference_ms;
+    snapshot.face_inference_ms = face_inference_ms;
     snapshot.processed_frames += 1;
     snapshot.last_error = None;
+}
+
+fn run_detector(
+    session: &mut Session,
+    input_data: Vec<f32>,
+    letterbox: &Letterbox,
+    kind: DetectionKind,
+    confidence_threshold: f32,
+) -> Result<(Vec<Detection>, f32), String> {
+    let input = Tensor::from_array(([1usize, 3, MODEL_HEIGHT, MODEL_WIDTH], input_data))
+        .map_err(|error| format!("Could not build {} tensor: {error}", kind.label()))?;
+
+    let inference_started = Instant::now();
+
+    let outputs = session
+        .run(ort::inputs![input])
+        .map_err(|error| format!("{} inference failed: {error}", kind.label()))?;
+
+    let inference_ms = inference_started.elapsed().as_secs_f32() * 1000.0;
+
+    if outputs.len() == 0 {
+        return Err(format!("{} detector returned no outputs", kind.label()));
+    }
+
+    let (shape, data) = outputs[0]
+        .try_extract_tensor::<f32>()
+        .map_err(|error| format!("Could not read {} output: {error}", kind.label()))?;
+
+    if shape.as_ref() != [1, 300, 6] {
+        return Err(format!(
+            "Unexpected {} output shape: {shape:?}",
+            kind.label()
+        ));
+    }
+
+    Ok((
+        decode_detections(data, letterbox, kind, confidence_threshold),
+        inference_ms,
+    ))
 }
 
 fn preprocess(image: &ColorImage) -> Result<(Vec<f32>, Letterbox), String> {
@@ -337,14 +414,19 @@ fn preprocess(image: &ColorImage) -> Result<(Vec<f32>, Letterbox), String> {
     ))
 }
 
-fn decode_person_detections(data: &[f32], letterbox: &Letterbox) -> Vec<Detection> {
+fn decode_detections(
+    data: &[f32],
+    letterbox: &Letterbox,
+    kind: DetectionKind,
+    confidence_threshold: f32,
+) -> Vec<Detection> {
     let mut detections = Vec::new();
 
     for detection in data.chunks_exact(6) {
         let confidence = detection[4];
         let class_id = detection[5].round() as i32;
 
-        if class_id != PERSON_CLASS_ID || confidence < CONFIDENCE_THRESHOLD {
+        if class_id != DETECTOR_CLASS_ID || confidence < confidence_threshold {
             continue;
         }
 
@@ -365,6 +447,7 @@ fn decode_person_detections(data: &[f32], letterbox: &Letterbox) -> Vec<Detectio
         }
 
         detections.push(Detection {
+            kind,
             x1,
             y1,
             x2,
