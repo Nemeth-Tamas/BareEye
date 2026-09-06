@@ -599,9 +599,9 @@ impl BareEyeApp {
         };
 
         if error.is_sign_positive() {
-            step
-        } else {
             -step
+        } else {
+            step
         }
     }
 
