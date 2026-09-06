@@ -1,6 +1,6 @@
 use crate::camera::ptz::ManualController;
 use crate::camera::{PreviewInfo, StreamTelemetry};
-use crate::vision::{VisionInput, VisionWorker};
+use crate::vision::{Detection, VisionInput, VisionWorker};
 use eframe::egui;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
@@ -112,7 +112,7 @@ impl PreviewStream {
         Ok(true)
     }
 
-    fn show(&self, ui: &mut egui::Ui) {
+    fn show(&self, ui: &mut egui::Ui, detections: &[Detection]) {
         let Some(texture) = &self.texture else {
             return;
         };
@@ -122,7 +122,41 @@ impl PreviewStream {
         let width = available.x.min(available.y * aspect);
         let height = width / aspect;
 
-        ui.image((texture.id(), egui::vec2(width, height)));
+        let response = ui.image((texture.id(), egui::vec2(width, height)));
+        let image_rect = response.rect;
+
+        let texture_size = texture.size();
+        let scale_x = image_rect.width() / texture_size[0] as f32;
+        let scale_y = image_rect.height() / texture_size[1] as f32;
+
+        let color = egui::Color32::from_rgb(0, 255, 0);
+        let stroke = egui::Stroke::new(2.0, color);
+        let painter = ui.painter();
+
+        for detection in detections {
+            let left = image_rect.left() + detection.x1 * scale_x;
+            let top = image_rect.top() + detection.y1 * scale_y;
+            let right = image_rect.left() + detection.x2 * scale_x;
+            let bottom = image_rect.top() + detection.y2 * scale_y;
+
+            let top_left = egui::pos2(left, top);
+            let top_right = egui::pos2(right, top);
+            let bottom_left = egui::pos2(left, bottom);
+            let bottom_right = egui::pos2(right, bottom);
+
+            painter.line_segment([top_left, top_right], stroke);
+            painter.line_segment([top_right, bottom_right], stroke);
+            painter.line_segment([bottom_right, bottom_left], stroke);
+            painter.line_segment([bottom_left, top_left], stroke);
+
+            painter.text(
+                top_left + egui::vec2(4.0, 4.0),
+                egui::Align2::LEFT_TOP,
+                format!("person {:.0}%", detection.confidence * 100.0),
+                egui::FontId::proportional(16.0),
+                color,
+            );
+        }
     }
 
     fn queue_depth(&self) -> usize {
@@ -859,7 +893,7 @@ impl eframe::App for BareEyeApp {
             };
 
             if stream.texture.is_some() {
-                stream.show(ui);
+                stream.show(ui, &vision.detections);
             } else {
                 ui.centered_and_justified(|ui| {
                     ui.horizontal(|ui| {
