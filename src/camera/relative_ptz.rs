@@ -274,122 +274,29 @@ fn try_relative_tracking_step(
 }
 
 pub fn movement_test(device: &Device) -> Result<(), Box<dyn Error>> {
-    let _com = ComGuard::init()?;
-    let _mf = MfGuard::init()?;
-
     println!();
-    println!("BareEye topology relative PTZ movement test");
+    println!("BareEye reusable relative PTZ movement test");
     println!("===========================================");
     println!("Device: {}", device.name);
 
-    let activations = enumerate_activations()?;
+    let controller = RelativePtzController::open(device).map_err(io::Error::other)?;
 
-    let mut matching_activation = None;
-
-    for activation in activations {
-        let symbolic_link = match read_string(
-            &activation,
-            &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
-        ) {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-
-        if symbolic_link == device.id.0 {
-            matching_activation = Some(activation);
-            break;
-        }
-    }
-
-    let activation = matching_activation.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "Could not find the EagleEye Media Foundation activation object",
-        )
-    })?;
-
-    let source: IMFMediaSource = unsafe { activation.ActivateObject()? };
-
-    println!("Media Foundation source opened.");
-
-    let topology = source.cast::<IKsTopologyInfo>()?;
-
-    let node_count = unsafe { topology.NumNodes()? };
-
-    println!("Topology nodes: {node_count}");
-
-    let mut camera_control = None;
-
-    for node_id in 0..node_count {
-        let node_type = unsafe { topology.get_NodeType(node_id)? };
-
-        println!("Node {node_id}: {node_type:?}");
-
-        let mut raw = std::ptr::null_mut();
-
-        let result =
-            unsafe { topology.CreateNodeInstance(node_id, &ICAMERA_CONTROL_IID, &mut raw) };
-
-        match result {
-            Ok(()) if !raw.is_null() => {
-                println!("  ICameraControl: FOUND");
-
-                let control = unsafe { IUnknown::from_raw(raw) };
-
-                camera_control = Some(control);
-                break;
-            }
-            Ok(()) => {
-                println!("  ICameraControl: null interface");
-            }
-            Err(_) => {
-                println!("  ICameraControl: unavailable");
-            }
-        }
-    }
-
-    let control = camera_control.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "No topology node exposed ICameraControl",
-        )
-    })?;
-
-    println!();
-    println!("ICameraControl topology node acquired.");
+    println!("Reusable relative PTZ controller opened.");
     println!("Testing true relative motor commands.");
 
-    let stop_guard = RawRelativeStopGuard { control: &control };
-
-    raw_relative_stop(&control)?;
+    controller.stop().map_err(io::Error::other)?;
 
     thread::sleep(Duration::from_millis(500));
 
-    run_raw_relative_step(&control, "PAN +2", CAMERA_CONTROL_PUT_PAN_RELATIVE_SLOT, 2)?;
+    run_controller_step(&controller, "PAN +2", 2, 0)?;
 
-    run_raw_relative_step(&control, "PAN -2", CAMERA_CONTROL_PUT_PAN_RELATIVE_SLOT, -2)?;
+    run_controller_step(&controller, "PAN -2", -2, 0)?;
 
-    run_raw_relative_step(
-        &control,
-        "TILT +2",
-        CAMERA_CONTROL_PUT_TILT_RELATIVE_SLOT,
-        2,
-    )?;
+    run_controller_step(&controller, "TILT +2", 0, 2)?;
 
-    run_raw_relative_step(
-        &control,
-        "TILT -2",
-        CAMERA_CONTROL_PUT_TILT_RELATIVE_SLOT,
-        -2,
-    )?;
+    run_controller_step(&controller, "TILT -2", 0, -2)?;
 
-    raw_relative_stop(&control)?;
-
-    drop(stop_guard);
-
-    unsafe {
-        let _ = source.Shutdown();
-    }
+    controller.stop().map_err(io::Error::other)?;
 
     println!();
     println!("Movement test complete.");
@@ -398,6 +305,107 @@ pub fn movement_test(device: &Device) -> Result<(), Box<dyn Error>> {
 }
 
 type PutRelativeFn = unsafe extern "system" fn(*mut c_void, i32, i32) -> HRESULT;
+
+pub struct RelativePtzController {
+    control: IUnknown,
+    source: IMFMediaSource,
+    _mf: MfGuard,
+    _com: ComGuard,
+}
+
+impl RelativePtzController {
+    pub fn open(device: &Device) -> Result<Self, String> {
+        let com = ComGuard::init().map_err(|error| error.to_string())?;
+
+        let mf = MfGuard::init().map_err(|error| error.to_string())?;
+
+        let activations = enumerate_activations().map_err(|error| error.to_string())?;
+
+        let mut matching_activation = None;
+
+        for activation in activations {
+            let symbolic_link = match read_string(
+                &activation,
+                &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
+            ) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            if symbolic_link == device.id.0 {
+                matching_activation = Some(activation);
+                break;
+            }
+        }
+
+        let activation = matching_activation.ok_or_else(|| {
+            "Could not find the EagleEye Media Foundation activation object".to_owned()
+        })?;
+
+        let source: IMFMediaSource =
+            unsafe { activation.ActivateObject() }.map_err(|error| error.to_string())?;
+
+        let topology = source
+            .cast::<IKsTopologyInfo>()
+            .map_err(|error| error.to_string())?;
+
+        let node_count = unsafe { topology.NumNodes() }.map_err(|error| error.to_string())?;
+
+        let mut camera_control = None;
+
+        for node_id in 0..node_count {
+            let mut raw = std::ptr::null_mut();
+
+            let result =
+                unsafe { topology.CreateNodeInstance(node_id, &ICAMERA_CONTROL_IID, &mut raw) };
+
+            if result.is_ok() && !raw.is_null() {
+                camera_control = Some(unsafe { IUnknown::from_raw(raw) });
+
+                break;
+            }
+        }
+
+        let control =
+            camera_control.ok_or_else(|| "No topology node exposed ICameraControl".to_owned())?;
+
+        Ok(Self {
+            control,
+            source,
+            _mf: mf,
+            _com: com,
+        })
+    }
+
+    pub fn set_speed(&self, pan: i32, tilt: i32) -> Result<(), String> {
+        call_raw_relative(&self.control, CAMERA_CONTROL_PUT_PAN_RELATIVE_SLOT, pan)
+            .map_err(|error| error.to_string())?;
+
+        if let Err(error) =
+            call_raw_relative(&self.control, CAMERA_CONTROL_PUT_TILT_RELATIVE_SLOT, tilt)
+        {
+            let _ = call_raw_relative(&self.control, CAMERA_CONTROL_PUT_PAN_RELATIVE_SLOT, 0);
+
+            return Err(error.to_string());
+        }
+
+        Ok(())
+    }
+
+    pub fn stop(&self) -> Result<(), String> {
+        self.set_speed(0, 0)
+    }
+}
+
+impl Drop for RelativePtzController {
+    fn drop(&mut self) {
+        let _ = self.stop();
+
+        unsafe {
+            let _ = self.source.Shutdown();
+        }
+    }
+}
 
 fn call_raw_relative(control: &IUnknown, slot: usize, value: i32) -> windows::core::Result<()> {
     let raw = control.as_raw();
@@ -413,48 +421,27 @@ fn call_raw_relative(control: &IUnknown, slot: usize, value: i32) -> windows::co
     result.ok()
 }
 
-fn run_raw_relative_step(
-    control: &IUnknown,
+fn run_controller_step(
+    controller: &RelativePtzController,
     label: &str,
-    slot: usize,
-    value: i32,
-) -> windows::core::Result<()> {
+    pan: i32,
+    tilt: i32,
+) -> Result<(), Box<dyn Error>> {
     println!();
     println!("{label}");
     println!("  START");
 
-    call_raw_relative(control, slot, value)?;
+    controller.set_speed(pan, tilt).map_err(io::Error::other)?;
 
     thread::sleep(Duration::from_millis(500));
 
     println!("  STOP");
 
-    call_raw_relative(control, slot, 0)?;
+    controller.stop().map_err(io::Error::other)?;
 
     thread::sleep(Duration::from_millis(700));
 
     Ok(())
-}
-
-fn raw_relative_stop(control: &IUnknown) -> windows::core::Result<()> {
-    let pan_result = call_raw_relative(control, CAMERA_CONTROL_PUT_PAN_RELATIVE_SLOT, 0);
-
-    let tilt_result = call_raw_relative(control, CAMERA_CONTROL_PUT_TILT_RELATIVE_SLOT, 0);
-
-    pan_result?;
-    tilt_result?;
-
-    Ok(())
-}
-
-struct RawRelativeStopGuard<'a> {
-    control: &'a IUnknown,
-}
-
-impl Drop for RawRelativeStopGuard<'_> {
-    fn drop(&mut self) {
-        let _ = raw_relative_stop(self.control);
-    }
 }
 
 fn probe_set_buffer_requirements(control: &IKsControl, label: &str, property_id: u32) {
