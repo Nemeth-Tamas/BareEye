@@ -18,6 +18,11 @@ use windows::core::{GUID, Interface};
 
 const CAMERA_CONTROL_PROPERTY_SET: GUID = GUID::from_u128(0xc6e13370_30ac_11d0_a18c_00a0c9118956);
 
+const PAN_PROPERTY_ID: u32 = 0;
+const TILT_PROPERTY_ID: u32 = 1;
+const PANTILT_PROPERTY_ID: u32 = 9;
+const PAN_RELATIVE_PROPERTY_ID: u32 = 10;
+const TILT_RELATIVE_PROPERTY_ID: u32 = 11;
 const PANTILT_RELATIVE_PROPERTY_ID: u32 = 17;
 
 const PROPERTY_TYPE_GET: u32 = 1;
@@ -77,22 +82,35 @@ pub fn probe(device: &Device) -> Result<(), Box<dyn Error>> {
             println!("IKsControl: AVAILABLE");
             println!("Low-level KS camera control path is accessible.");
 
-            println!();
-            println!("KSPROPERTY_CAMERACONTROL_PANTILT_RELATIVE");
-            println!("-----------------------------------------");
-            println!("Property ID: {PANTILT_RELATIVE_PROPERTY_ID}");
+            let properties = [
+                ("PAN", PAN_PROPERTY_ID),
+                ("TILT", TILT_PROPERTY_ID),
+                ("PANTILT", PANTILT_PROPERTY_ID),
+                ("PAN_RELATIVE", PAN_RELATIVE_PROPERTY_ID),
+                ("TILT_RELATIVE", TILT_RELATIVE_PROPERTY_ID),
+                ("PANTILT_RELATIVE", PANTILT_RELATIVE_PROPERTY_ID),
+            ];
 
-            match query_basic_support(&control) {
-                Ok((access_flags, bytes_returned)) => {
-                    println!("BasicSupport: AVAILABLE");
-                    println!("Bytes returned: {bytes_returned}");
-                    println!("Access mask: 0x{access_flags:08X}");
-                    println!("GET supported: {}", access_flags & PROPERTY_TYPE_GET != 0);
-                    println!("SET supported: {}", access_flags & PROPERTY_TYPE_SET != 0);
-                }
-                Err(error) => {
-                    println!("BasicSupport: NOT AVAILABLE");
-                    println!("Query failed: {error}");
+            println!();
+            println!("Camera-control BasicSupport matrix");
+            println!("----------------------------------");
+
+            for (name, property_id) in properties {
+                println!();
+                println!("{name} (property {property_id})");
+
+                match query_basic_support(&control, property_id) {
+                    Ok((access_flags, bytes_returned)) => {
+                        println!("  BasicSupport: AVAILABLE");
+                        println!("  Bytes returned: {bytes_returned}");
+                        println!("  Access mask: 0x{access_flags:08X}");
+                        println!("  GET supported: {}", access_flags & PROPERTY_TYPE_GET != 0);
+                        println!("  SET supported: {}", access_flags & PROPERTY_TYPE_SET != 0);
+                    }
+                    Err(error) => {
+                        println!("  BasicSupport: NOT AVAILABLE");
+                        println!("  Query failed: {error}");
+                    }
                 }
             }
         }
@@ -109,12 +127,15 @@ pub fn probe(device: &Device) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn query_basic_support(control: &IKsControl) -> windows::core::Result<(u32, u32)> {
+fn query_basic_support(
+    control: &IKsControl,
+    property_id: u32,
+) -> windows::core::Result<(u32, u32)> {
     debug_assert_eq!(size_of::<KsPropertyRaw>(), 24);
 
     let property = KsPropertyRaw {
         set: CAMERA_CONTROL_PROPERTY_SET,
-        id: PANTILT_RELATIVE_PROPERTY_ID,
+        id: property_id,
         flags: PROPERTY_TYPE_BASICSUPPORT,
     };
 
