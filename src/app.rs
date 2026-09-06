@@ -61,6 +61,69 @@ struct PreviewWorkerStats {
     queue_drops: u64,
 }
 
+enum PreviewInteraction {
+    None,
+    Clear,
+    Select(Detection),
+}
+
+#[derive(Clone)]
+struct SelectedTarget {
+    detection: Detection,
+    visible: bool,
+}
+
+impl SelectedTarget {
+    fn new(detection: Detection) -> Self {
+        Self {
+            detection,
+            visible: true,
+        }
+    }
+
+    fn refresh(&mut self, detections: &[Detection]) {
+        let current_x = (self.detection.x1 + self.detection.x2) * 0.5;
+        let current_y = (self.detection.y1 + self.detection.y2) * 0.5;
+
+        let current_width = self.detection.x2 - self.detection.x1;
+        let current_height = self.detection.y2 - self.detection.y1;
+
+        let maximum_distance = current_width
+            .hypot(current_height)
+            .mul_add(0.75, 0.0)
+            .max(80.0);
+
+        let mut best: Option<(&Detection, f32)> = None;
+
+        for detection in detections
+            .iter()
+            .filter(|detection| detection.kind == self.detection.kind)
+        {
+            let center_x = (detection.x1 + detection.x2) * 0.5;
+            let center_y = (detection.y1 + detection.y2) * 0.5;
+
+            let distance = (center_x - current_x).hypot(center_y - current_y);
+
+            if best
+                .as_ref()
+                .map_or(true, |(_, best_distance)| distance < *best_distance)
+            {
+                best = Some((detection, distance));
+            }
+        }
+
+        if let Some((detection, distance)) = best {
+            if distance <= maximum_distance {
+                self.detection = detection.clone();
+                self.visible = true;
+                return;
+            }
+        }
+
+        self.visible = false;
+    }
+}
+
 struct PreviewStream {
     pump: egui_cameras::Pump,
     decoder: std::thread::JoinHandle<()>,
@@ -112,9 +175,14 @@ impl PreviewStream {
         Ok(true)
     }
 
-    fn show(&self, ui: &mut egui::Ui, detections: &[Detection]) {
+    fn show(
+        &self,
+        ui: &mut egui::Ui,
+        detections: &[Detection],
+        selected: Option<&Detection>,
+    ) -> PreviewInteraction {
         let Some(texture) = &self.texture else {
-            return;
+            return PreviewInteraction::None;
         };
 
         let aspect = texture.aspect_ratio();
@@ -122,22 +190,46 @@ impl PreviewStream {
         let width = available.x.min(available.y * aspect);
         let height = width / aspect;
 
-        let response = ui.image((texture.id(), egui::vec2(width, height)));
+        let response = ui.add(
+            egui::Image::new((texture.id(), egui::vec2(width, height))).sense(egui::Sense::click()),
+        );
+
         let image_rect = response.rect;
 
         let texture_size = texture.size();
         let scale_x = image_rect.width() / texture_size[0] as f32;
         let scale_y = image_rect.height() / texture_size[1] as f32;
 
+        let click_position = if response.clicked() {
+            response.interact_pointer_pos()
+        } else {
+            None
+        };
+
         let painter = ui.painter();
+        let mut clicked_detection: Option<(f32, Detection)> = None;
 
         for detection in detections {
-            let color = match detection.kind {
-                DetectionKind::Person => egui::Color32::from_rgb(0, 255, 0),
-                DetectionKind::Face => egui::Color32::from_rgb(0, 200, 255),
+            let is_selected = selected.is_some_and(|selected| {
+                detection.kind == selected.kind
+                    && detection.x1 == selected.x1
+                    && detection.y1 == selected.y1
+                    && detection.x2 == selected.x2
+                    && detection.y2 == selected.y2
+            });
+
+            let color = if is_selected {
+                egui::Color32::YELLOW
+            } else {
+                match detection.kind {
+                    DetectionKind::Person => egui::Color32::from_rgb(0, 255, 0),
+                    DetectionKind::Face => egui::Color32::from_rgb(0, 200, 255),
+                }
             };
 
-            let stroke = egui::Stroke::new(2.0_f32, color);
+            let stroke_width = if is_selected { 4.0_f32 } else { 2.0_f32 };
+            let stroke = egui::Stroke::new(stroke_width, color);
+
             let left = image_rect.left() + detection.x1 * scale_x;
             let top = image_rect.top() + detection.y1 * scale_y;
             let right = image_rect.left() + detection.x2 * scale_x;
@@ -148,22 +240,56 @@ impl PreviewStream {
             let bottom_left = egui::pos2(left, bottom);
             let bottom_right = egui::pos2(right, bottom);
 
+            let detection_rect = egui::Rect::from_min_max(top_left, bottom_right);
+
+            if let Some(position) = click_position {
+                if detection_rect.contains(position) {
+                    let area = detection_rect.width() * detection_rect.height();
+
+                    if clicked_detection
+                        .as_ref()
+                        .map_or(true, |(best_area, _)| area < *best_area)
+                    {
+                        clicked_detection = Some((area, detection.clone()));
+                    }
+                }
+            }
+
             painter.line_segment([top_left, top_right], stroke);
             painter.line_segment([top_right, bottom_right], stroke);
             painter.line_segment([bottom_right, bottom_left], stroke);
             painter.line_segment([bottom_left, top_left], stroke);
 
-            painter.text(
-                top_left + egui::vec2(4.0, 4.0),
-                egui::Align2::LEFT_TOP,
+            let label = if is_selected {
+                format!(
+                    "LOCKED {} {:.0}%",
+                    detection.kind.label(),
+                    detection.confidence * 100.0
+                )
+            } else {
                 format!(
                     "{} {:.0}%",
                     detection.kind.label(),
                     detection.confidence * 100.0
-                ),
+                )
+            };
+
+            painter.text(
+                top_left + egui::vec2(4.0, 4.0),
+                egui::Align2::LEFT_TOP,
+                label,
                 egui::FontId::proportional(16.0),
                 color,
             );
+        }
+
+        if response.clicked() {
+            match clicked_detection {
+                Some((_, detection)) => PreviewInteraction::Select(detection),
+                None => PreviewInteraction::Clear,
+            }
+        } else {
+            PreviewInteraction::None
         }
     }
 
@@ -363,6 +489,7 @@ struct BareEyeApp {
     info: PreviewInfo,
     ptz: ManualController,
     vision: VisionWorker,
+    selected_target: Option<SelectedTarget>,
     debug: bool,
     ptz_error: Option<String>,
     last_ptz_button_at: Option<Instant>,
@@ -399,6 +526,7 @@ impl BareEyeApp {
             info,
             ptz,
             vision,
+            selected_target: None,
             debug,
             ptz_error: None,
             last_ptz_button_at: None,
@@ -572,6 +700,10 @@ impl eframe::App for BareEyeApp {
 
         let vision = self.vision.snapshot();
 
+        if let Some(target) = self.selected_target.as_mut() {
+            target.refresh(&vision.detections);
+        }
+
         let person_count = vision
             .detections
             .iter()
@@ -630,6 +762,22 @@ impl eframe::App for BareEyeApp {
                     ));
                 } else {
                     ui.label("Vision: starting...");
+                }
+
+                if let Some(target) = &self.selected_target {
+                    ui.separator();
+
+                    if target.visible {
+                        ui.strong(format!(
+                            "LOCKED: {}",
+                            target.detection.kind.label()
+                        ));
+                    } else {
+                        ui.strong(format!(
+                            "SEARCHING: {}",
+                            target.detection.kind.label()
+                        ));
+                    }
                 }
 
                 if self.debug {
@@ -913,7 +1061,27 @@ impl eframe::App for BareEyeApp {
             };
 
             if stream.texture.is_some() {
-                stream.show(ui, &vision.detections);
+                let selected_detection = self
+                    .selected_target
+                    .as_ref()
+                    .filter(|target| target.visible)
+                    .map(|target| target.detection.clone());
+
+                let interaction = stream.show(
+                    ui,
+                    &vision.detections,
+                    selected_detection.as_ref(),
+                );
+
+                match interaction {
+                    PreviewInteraction::None => {}
+                    PreviewInteraction::Clear => {
+                        self.selected_target = None;
+                    }
+                    PreviewInteraction::Select(detection) => {
+                        self.selected_target = Some(SelectedTarget::new(detection));
+                    }
+                }
             } else {
                 ui.centered_and_justified(|ui| {
                     ui.horizontal(|ui| {

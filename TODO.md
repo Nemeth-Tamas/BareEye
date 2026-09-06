@@ -30,7 +30,7 @@
 * [x] Integrate ONNX Runtime
 * [x] Enable NVIDIA CUDA inference on Windows
 * [x] Add person detection
-* [ ] Add face detection
+* [x] Add face detection
 * [ ] Draw interactive detection boxes over the live image
 * [ ] Maintain stable identities between frames
 * [ ] Add short-term target re-identification after occlusion
