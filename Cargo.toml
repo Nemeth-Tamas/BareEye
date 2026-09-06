@@ -8,6 +8,12 @@ cameras = { version = "0.3.2", features = ["controls"] }
 eframe = "=0.34.3"
 egui-cameras = "0.3.2"
 ort = { version = "=2.0.0-rc.13", features = ["cuda"] }
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Media_KernelStreaming",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+] }
 
 [build-dependencies]
 embed-manifest = "1.5.0"

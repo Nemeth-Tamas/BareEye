@@ -51,11 +51,11 @@
 * [x] Convert image-space target error into pan and tilt commands
 * [ ] Maintain sub-degree internal PTZ targets and accumulate fractional corrections
 * [ ] Quantize physical PTZ commands to the camera's actual supported hardware step
-* [ ] Add smoothing and dead zones
+* [x] Add smoothing and dead zones
 * [ ] Add target-motion prediction
 * [ ] Add zoom-dependent control sensitivity
 * [ ] Add acceleration and movement-rate limits
-* [ ] Prevent oscillation and detection-jitter chasing
+* [x] Prevent oscillation and detection-jitter chasing
 * [ ] Maintain stable tracking during simultaneous pan, tilt, and zoom
 
 ## 6. Framing and zoom lock
