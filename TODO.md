@@ -31,18 +31,18 @@
 * [x] Enable NVIDIA CUDA inference on Windows
 * [x] Add person detection
 * [x] Add face detection
-* [ ] Draw interactive detection boxes over the live image
+* [x] Draw interactive detection boxes over the live image
 * [ ] Maintain stable identities between frames
 * [ ] Add short-term target re-identification after occlusion
 * [ ] Keep the vision pipeline real-time by dropping stale frames
 
 ## 4. Target selection
 
-* [ ] Select a detected person or face by clicking its box
-* [ ] Deselect or switch targets cleanly
+* [x] Select a detected person or face by clicking its box
+* [x] Deselect or switch targets cleanly
 * [ ] Add manual drag-to-select tracking for arbitrary objects
 * [ ] Store target appearance and motion state
-* [ ] Recover a selected target after brief loss
+* [x] Recover a selected target after brief loss
 * [ ] Clearly display locked, searching, lost, and reacquired states
 
 ## 5. PTZ tracking controller

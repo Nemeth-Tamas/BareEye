@@ -1,6 +1,7 @@
 use cameras::{ControlCapabilities, ControlRange, Controls, Device};
 use std::error::Error;
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -27,6 +28,7 @@ impl Axis {
 enum WorkerCommand {
     Apply(Controls),
     Relative(Axis, f32),
+    TrackRelative { pan: f32, tilt: f32 },
     ReadPosition,
     Shutdown,
 }
@@ -109,6 +111,7 @@ pub struct ManualController {
     sender: std::sync::mpsc::Sender<WorkerCommand>,
     worker: Option<thread::JoinHandle<()>>,
     state: std::sync::Arc<std::sync::Mutex<WorkerState>>,
+    tracking_pending: std::sync::Arc<AtomicBool>,
 }
 
 impl ManualController {
@@ -144,6 +147,10 @@ impl ManualController {
 
         let worker_state = std::sync::Arc::clone(&state);
         let worker_capabilities = capabilities.clone();
+
+        let tracking_pending = std::sync::Arc::new(AtomicBool::new(false));
+        let worker_tracking_pending = std::sync::Arc::clone(&tracking_pending);
+
         let (sender, receiver) = std::sync::mpsc::channel();
 
         let worker = thread::Builder::new()
@@ -287,6 +294,104 @@ impl ManualController {
 
                             state.last_error = result.err();
                         }
+                        WorkerCommand::TrackRelative { pan, tilt } => {
+                            let started = Instant::now();
+
+                            let result = (|| -> Result<(), String> {
+                                let current = cameras::read_controls(&device)
+                                    .map_err(|error| error.to_string())?;
+
+                                {
+                                    let mut state = worker_state
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                                    state.actual_pan = current.pan;
+                                    state.actual_tilt = current.tilt;
+                                    state.actual_zoom = current.zoom;
+                                }
+
+                                let pan_target = if pan.abs() > f32::EPSILON {
+                                    let Some(range) = worker_capabilities.pan else {
+                                        return Err(
+                                            "Pan is not supported by this camera.".to_owned()
+                                        );
+                                    };
+
+                                    let current_pan = current.pan.unwrap_or(range.default);
+
+                                    Some(snap_to_step(
+                                        (current_pan + pan).clamp(range.min, range.max),
+                                        range,
+                                    ))
+                                } else {
+                                    None
+                                };
+
+                                let tilt_target = if tilt.abs() > f32::EPSILON {
+                                    let Some(range) = worker_capabilities.tilt else {
+                                        return Err(
+                                            "Tilt is not supported by this camera.".to_owned()
+                                        );
+                                    };
+
+                                    let current_tilt = current.tilt.unwrap_or(range.default);
+
+                                    Some(snap_to_step(
+                                        (current_tilt + tilt).clamp(range.min, range.max),
+                                        range,
+                                    ))
+                                } else {
+                                    None
+                                };
+
+                                if pan_target.is_none() && tilt_target.is_none() {
+                                    return Ok(());
+                                }
+
+                                let controls = Controls {
+                                    pan: pan_target,
+                                    tilt: tilt_target,
+                                    ..Default::default()
+                                };
+
+                                cameras::apply_controls(&device, &controls)
+                                    .map_err(|error| error.to_string())?;
+
+                                {
+                                    let mut state = worker_state
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                                    if let Some(target) = pan_target {
+                                        state.target_pan = target;
+                                    }
+
+                                    if let Some(target) = tilt_target {
+                                        state.target_tilt = target;
+                                    }
+                                }
+
+                                wait_for_worker_targets(
+                                    &device,
+                                    &worker_capabilities,
+                                    &worker_state,
+                                    pan_target,
+                                    tilt_target,
+                                    None,
+                                )
+                            })();
+
+                            let mut state = worker_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                            state.last_operation_ms = started.elapsed().as_secs_f32() * 1000.0;
+
+                            state.last_error = result.err();
+
+                            worker_tracking_pending.store(false, Ordering::Release);
+                        }
                         WorkerCommand::ReadPosition => {
                             let started = Instant::now();
                             let result = cameras::read_controls(&device);
@@ -321,6 +426,7 @@ impl ManualController {
             sender,
             worker: Some(worker),
             state,
+            tracking_pending,
         })
     }
 
@@ -395,6 +501,23 @@ impl ManualController {
 
     pub fn tilt_by(&self, amount: f32) -> Result<(), String> {
         self.send(WorkerCommand::Relative(Axis::Tilt, amount))
+    }
+
+    pub fn track_by(&self, pan: f32, tilt: f32) -> Result<bool, String> {
+        if pan.abs() <= f32::EPSILON && tilt.abs() <= f32::EPSILON {
+            return Ok(false);
+        }
+
+        if self.tracking_pending.swap(true, Ordering::AcqRel) {
+            return Ok(false);
+        }
+
+        if let Err(error) = self.send(WorkerCommand::TrackRelative { pan, tilt }) {
+            self.tracking_pending.store(false, Ordering::Release);
+            return Err(error);
+        }
+
+        Ok(true)
     }
 
     pub fn zoom_by(&self, amount: f32) -> Result<(), String> {

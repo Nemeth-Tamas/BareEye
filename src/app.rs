@@ -14,6 +14,10 @@ const SLOW_DISPLAY_GAP: Duration = Duration::from_millis(45);
 const SLOW_UI_GAP: Duration = Duration::from_millis(50);
 const PTZ_BUTTON_COOLDOWN: Duration = Duration::from_millis(200);
 
+const TRACKING_COMMAND_INTERVAL: Duration = Duration::from_millis(150);
+const TRACKING_DEADZONE_X: f32 = 0.04;
+const TRACKING_DEADZONE_Y: f32 = 0.05;
+
 pub fn run(
     camera: cameras::Camera,
     info: PreviewInfo,
@@ -490,6 +494,8 @@ struct BareEyeApp {
     ptz: ManualController,
     vision: VisionWorker,
     selected_target: Option<SelectedTarget>,
+    tracking_enabled: bool,
+    last_tracking_command_at: Option<Instant>,
     debug: bool,
     ptz_error: Option<String>,
     last_ptz_button_at: Option<Instant>,
@@ -527,6 +533,8 @@ impl BareEyeApp {
             ptz,
             vision,
             selected_target: None,
+            tracking_enabled: false,
+            last_tracking_command_at: None,
             debug,
             ptz_error: None,
             last_ptz_button_at: None,
@@ -565,6 +573,63 @@ impl BareEyeApp {
 
     fn mark_ptz_button_used(&mut self) {
         self.last_ptz_button_at = Some(Instant::now());
+    }
+
+    fn tracking_step(error: f32, deadzone: f32) -> f32 {
+        let magnitude = error.abs();
+
+        if magnitude <= deadzone {
+            0.0
+        } else if magnitude >= 0.25 {
+            3.0 * error.signum()
+        } else if magnitude >= 0.12 {
+            2.0 * error.signum()
+        } else {
+            1.0 * error.signum()
+        }
+    }
+
+    fn update_tracking(&mut self) {
+        if !self.tracking_enabled {
+            return;
+        }
+
+        let Some(target) = self
+            .selected_target
+            .as_ref()
+            .filter(|target| target.visible)
+        else {
+            return;
+        };
+
+        if self
+            .last_tracking_command_at
+            .is_some_and(|last| last.elapsed() < TRACKING_COMMAND_INTERVAL)
+        {
+            return;
+        }
+
+        let center_x = (target.detection.x1 + target.detection.x2) * 0.5;
+        let center_y = (target.detection.y1 + target.detection.y2) * 0.5;
+
+        let error_x = (center_x - self.info.width as f32 * 0.5) / self.info.width as f32;
+
+        let error_y = (center_y - self.info.height as f32 * 0.5) / self.info.height as f32;
+
+        let pan_step = Self::tracking_step(error_x, TRACKING_DEADZONE_X);
+
+        let tilt_step = -Self::tracking_step(error_y, TRACKING_DEADZONE_Y);
+
+        match self.ptz.track_by(pan_step, tilt_step) {
+            Ok(true) => {
+                self.last_tracking_command_at = Some(Instant::now());
+                self.ptz_error = None;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                self.ptz_error = Some(error);
+            }
+        }
     }
 
     fn handle_keyboard_ptz(&mut self, ctx: &egui::Context) {
@@ -704,6 +769,12 @@ impl eframe::App for BareEyeApp {
             target.refresh(&vision.detections);
         }
 
+        if self.selected_target.is_none() {
+            self.tracking_enabled = false;
+        }
+
+        self.update_tracking();
+
         let person_count = vision
             .detections
             .iter()
@@ -768,10 +839,17 @@ impl eframe::App for BareEyeApp {
                     ui.separator();
 
                     if target.visible {
-                        ui.strong(format!(
-                            "LOCKED: {}",
-                            target.detection.kind.label()
-                        ));
+                        if self.tracking_enabled {
+                            ui.strong(format!(
+                                "FOLLOWING: {}",
+                                target.detection.kind.label()
+                            ));
+                        } else {
+                            ui.strong(format!(
+                                "LOCKED: {}",
+                                target.detection.kind.label()
+                            ));
+                        }
                     } else {
                         ui.strong(format!(
                             "SEARCHING: {}",
@@ -916,6 +994,14 @@ impl eframe::App for BareEyeApp {
 
             ui.horizontal(|ui| {
                 ui.strong("PTZ");
+
+                let has_target = self.selected_target.is_some();
+
+                ui.add_enabled_ui(has_target, |ui| {
+                    ui.checkbox(&mut self.tracking_enabled, "Follow");
+                });
+
+                ui.separator();
 
                 let buttons_enabled = self.ptz_buttons_enabled();
 
@@ -1077,6 +1163,7 @@ impl eframe::App for BareEyeApp {
                     PreviewInteraction::None => {}
                     PreviewInteraction::Clear => {
                         self.selected_target = None;
+                        self.tracking_enabled = false;
                     }
                     PreviewInteraction::Select(detection) => {
                         self.selected_target = Some(SelectedTarget::new(detection));
