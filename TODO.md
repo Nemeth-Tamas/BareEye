@@ -17,9 +17,9 @@
 * [x] Create native Windows application window
 * [x] Display the live camera feed with low latency
 * [ ] Add GPU-efficient frame presentation
-* [ ] Add camera status and PTZ diagnostics
+* [x] Add camera status and PTZ diagnostics
 * [ ] Add mouse-controlled manual pan, tilt, and zoom
-* [ ] Add keyboard controls for development and recovery
+* [x] Add keyboard controls for development and recovery
 * [ ] Keep capture, vision, control, and UI work isolated from each other
 
 ## 3. Vision pipeline

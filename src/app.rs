@@ -16,6 +16,7 @@ pub fn run(
     camera: cameras::Camera,
     info: PreviewInfo,
     ptz: ManualController,
+    debug: bool,
 ) -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -31,7 +32,9 @@ pub fn run(
             let (stream, telemetry) =
                 spawn_camera_stream(camera, creation_context.egui_ctx.clone(), &info);
 
-            Ok(Box::new(BareEyeApp::new(stream, telemetry, info, ptz)))
+            Ok(Box::new(BareEyeApp::new(
+                stream, telemetry, info, ptz, debug,
+            )))
         }),
     )
 }
@@ -307,6 +310,7 @@ struct BareEyeApp {
     telemetry: Arc<Mutex<StreamTelemetry>>,
     info: PreviewInfo,
     ptz: ManualController,
+    debug: bool,
     ptz_error: Option<String>,
     last_ui_started: Instant,
     ui_gap_ms: f32,
@@ -332,12 +336,14 @@ impl BareEyeApp {
         telemetry: Arc<Mutex<StreamTelemetry>>,
         info: PreviewInfo,
         ptz: ManualController,
+        debug: bool,
     ) -> Self {
         Self {
             stream: Some(stream),
             telemetry,
             info,
             ptz,
+            debug,
             ptz_error: None,
             last_ui_started: Instant::now(),
             ui_gap_ms: 0.0,
@@ -364,6 +370,55 @@ impl BareEyeApp {
             Err(error) => self.ptz_error = Some(error),
         }
     }
+
+    fn handle_keyboard_ptz(&mut self, ctx: &egui::Context) {
+        let (left, right, up, down, zoom_out, zoom_in, center) = ctx.input(|input| {
+            (
+                input.key_pressed(egui::Key::ArrowLeft) || input.key_pressed(egui::Key::A),
+                input.key_pressed(egui::Key::ArrowRight) || input.key_pressed(egui::Key::D),
+                input.key_pressed(egui::Key::ArrowUp) || input.key_pressed(egui::Key::W),
+                input.key_pressed(egui::Key::ArrowDown) || input.key_pressed(egui::Key::S),
+                input.key_pressed(egui::Key::Q),
+                input.key_pressed(egui::Key::E),
+                input.key_pressed(egui::Key::C),
+            )
+        });
+
+        if left {
+            let result = self.ptz.pan_by(-10.0);
+            self.record_ptz_result(result);
+        }
+
+        if right {
+            let result = self.ptz.pan_by(10.0);
+            self.record_ptz_result(result);
+        }
+
+        if up {
+            let result = self.ptz.tilt_by(5.0);
+            self.record_ptz_result(result);
+        }
+
+        if down {
+            let result = self.ptz.tilt_by(-5.0);
+            self.record_ptz_result(result);
+        }
+
+        if zoom_out {
+            let result = self.ptz.zoom_by(-400.0);
+            self.record_ptz_result(result);
+        }
+
+        if zoom_in {
+            let result = self.ptz.zoom_by(400.0);
+            self.record_ptz_result(result);
+        }
+
+        if center {
+            let result = self.ptz.center();
+            self.record_ptz_result(result);
+        }
+    }
 }
 
 fn format_position(value: Option<f32>) -> String {
@@ -376,6 +431,8 @@ fn format_position(value: Option<f32>) -> String {
 impl eframe::App for BareEyeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+
+        self.handle_keyboard_ptz(&ctx);
 
         let ui_started = Instant::now();
         let ui_gap = ui_started.duration_since(self.last_ui_started);
@@ -479,115 +536,122 @@ impl eframe::App for BareEyeApp {
                 ui.separator();
 
                 ui.label(format!("Display: {:.1} FPS", self.measured_fps));
+
+                if self.debug {
+                    ui.separator();
+                    ui.strong("DEBUG");
+                }
             });
 
-            ui.horizontal(|ui| {
-                ui.label(format!("Arrived: {}", telemetry.arrived_frames));
+            if self.debug {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Arrived: {}", telemetry.arrived_frames));
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(format!("Displayed: {}", self.uploaded_frames));
+                    ui.label(format!("Displayed: {}", self.uploaded_frames));
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(format!("Pipeline drops: {pipeline_drops}"));
+                    ui.label(format!("Pipeline drops: {pipeline_drops}"));
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(format!("Source gaps: {}", telemetry.timing_anomalies));
+                    ui.label(format!("Source gaps: {}", telemetry.timing_anomalies));
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(format!("Size anomalies: {}", telemetry.dimension_anomalies));
+                    ui.label(format!("Size anomalies: {}", telemetry.dimension_anomalies));
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(format!("Format anomalies: {}", telemetry.format_anomalies));
-            });
+                    ui.label(format!("Format anomalies: {}", telemetry.format_anomalies));
+                });
 
-            ui.horizontal(|ui| {
-                ui.label(format!(
-                    "MJPEG: {:.0} KiB avg / {:.0} KiB peak",
-                    telemetry.mjpeg_average_kib, telemetry.mjpeg_peak_kib
-                ));
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "MJPEG: {:.0} KiB avg / {:.0} KiB peak",
+                        telemetry.mjpeg_average_kib, telemetry.mjpeg_peak_kib
+                    ));
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(format!(
-                    "Decode: {:.1} ms / {:.1} ms peak",
-                    worker_stats.decode_ms, worker_stats.decode_peak_ms
-                ));
+                    ui.label(format!(
+                        "Decode: {:.1} ms / {:.1} ms peak",
+                        worker_stats.decode_ms, worker_stats.decode_peak_ms
+                    ));
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(format!("Slow decodes: {}", worker_stats.slow_decodes));
+                    ui.label(format!("Slow decodes: {}", worker_stats.slow_decodes));
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(format!(
-                    "Upload: {:.1} ms / {:.1} ms peak",
-                    self.texture_update_ms, self.texture_update_peak_ms
-                ));
+                    ui.label(format!(
+                        "Upload: {:.1} ms / {:.1} ms peak",
+                        self.texture_update_ms, self.texture_update_peak_ms
+                    ));
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(format!("Slow uploads: {}", self.slow_texture_updates));
-            });
+                    ui.label(format!("Slow uploads: {}", self.slow_texture_updates));
+                });
 
-            ui.horizontal(|ui| {
-                ui.label(format!(
-                    "Buffered: {}/{}",
-                    buffered_frames, PREVIEW_QUEUE_CAPACITY
-                ));
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "Buffered: {}/{}",
+                        buffered_frames, PREVIEW_QUEUE_CAPACITY
+                    ));
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(format!("Raw queue drops: {}", worker_stats.raw_queue_drops));
+                    ui.label(format!("Raw queue drops: {}", worker_stats.raw_queue_drops));
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(format!("Decoded queue drops: {}", worker_stats.queue_drops));
+                    ui.label(format!("Decoded queue drops: {}", worker_stats.queue_drops));
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(format!("JPEG repairs: {}", worker_stats.decode_repairs));
+                    ui.label(format!("JPEG repairs: {}", worker_stats.decode_repairs));
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(format!("Decode errors: {}", worker_stats.decode_errors));
-            });
+                    ui.label(format!("Decode errors: {}", worker_stats.decode_errors));
+                });
 
-            ui.horizontal(|ui| {
-                ui.label(format!(
-                    "Display gap: {:.1} ms / {:.1} ms peak",
-                    self.display_gap_ms, self.display_gap_peak_ms
-                ));
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "Display gap: {:.1} ms / {:.1} ms peak",
+                        self.display_gap_ms, self.display_gap_peak_ms
+                    ));
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(format!("Slow display gaps: {}", self.slow_display_gaps));
+                    ui.label(format!("Slow display gaps: {}", self.slow_display_gaps));
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(format!(
-                    "UI gap: {:.1} ms / {:.1} ms peak",
-                    self.ui_gap_ms, self.ui_gap_peak_ms
-                ));
+                    ui.label(format!(
+                        "UI gap: {:.1} ms / {:.1} ms peak",
+                        self.ui_gap_ms, self.ui_gap_peak_ms
+                    ));
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(format!("Slow UI gaps: {}", self.slow_ui_gaps));
-            });
+                    ui.label(format!("Slow UI gaps: {}", self.slow_ui_gaps));
+                });
 
-            if let Some(repair) = &worker_stats.last_decode_repair {
-                ui.label(format!("Last JPEG repair: {repair}"));
-            }
+                if let Some(repair) = &worker_stats.last_decode_repair {
+                    ui.label(format!("Last JPEG repair: {repair}"));
+                }
 
-            if let Some(error) = &worker_stats.last_decode_error {
-                ui.colored_label(
-                    egui::Color32::RED,
-                    format!("Last unrecoverable JPEG error: {error}"),
-                );
+                if let Some(error) = &worker_stats.last_decode_error {
+                    ui.colored_label(
+                        egui::Color32::RED,
+                        format!("Last unrecoverable JPEG error: {error}"),
+                    );
+                }
             }
 
             ui.separator();
@@ -620,26 +684,32 @@ impl eframe::App for BareEyeApp {
                     self.record_ptz_result(result);
                 }
 
-                if ui.button("Read position").clicked() {
+                if self.debug && ui.button("Read position").clicked() {
                     let result = self.ptz.refresh_actual();
                     self.record_ptz_result(result);
                 }
             });
 
             ui.horizontal(|ui| {
+                ui.label("Keys: WASD/Arrows = PTZ  |  Q/E = Zoom  |  C = Center");
+
+                ui.separator();
+
                 ui.label(format!(
                     "Target: Pan {:.0}  Tilt {:.0}",
                     self.ptz.pan_target(),
                     self.ptz.tilt_target()
                 ));
 
-                ui.separator();
+                if self.debug {
+                    ui.separator();
 
-                ui.label(format!(
-                    "Last read: Pan {}  Tilt {}",
-                    format_position(self.ptz.actual_pan()),
-                    format_position(self.ptz.actual_tilt())
-                ));
+                    ui.label(format!(
+                        "Last read: Pan {}  Tilt {}",
+                        format_position(self.ptz.actual_pan()),
+                        format_position(self.ptz.actual_tilt())
+                    ));
+                }
             });
 
             ui.horizontal(|ui| {
@@ -672,25 +742,26 @@ impl eframe::App for BareEyeApp {
                     }
                 }
 
-                ui.separator();
+                if self.debug {
+                    ui.separator();
 
-                ui.label(format!(
-                    "Last read zoom: {}",
-                    format_position(self.ptz.actual_zoom())
-                ));
+                    ui.label(format!(
+                        "Last read zoom: {}",
+                        format_position(self.ptz.actual_zoom())
+                    ));
+                }
             });
 
-            ui.horizontal(|ui| {
+            if self.debug {
                 ui.label(format!(
                     "PTZ worker last operation: {:.1} ms",
                     self.ptz.last_operation_ms()
                 ));
+            }
 
-                if let Some(error) = self.ptz.worker_error() {
-                    ui.separator();
-                    ui.colored_label(egui::Color32::RED, format!("PTZ worker error: {error}"));
-                }
-            });
+            if let Some(error) = self.ptz.worker_error() {
+                ui.colored_label(egui::Color32::RED, format!("PTZ worker error: {error}"));
+            }
 
             if let Some(error) = &self.ptz_error {
                 ui.colored_label(egui::Color32::RED, format!("PTZ queue error: {error}"));

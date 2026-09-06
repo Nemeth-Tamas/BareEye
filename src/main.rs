@@ -5,6 +5,7 @@ use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments: Vec<String> = std::env::args().collect();
+    let debug = arguments.iter().any(|argument| argument == "--debug");
 
     let devices = cameras::devices()?;
 
@@ -38,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let ptz = camera::ptz::ManualController::new(eagleeye.clone())?;
     let (camera, preview_info) = camera::open_preview(eagleeye)?;
 
-    app::run(camera, preview_info, ptz)?;
+    app::run(camera, preview_info, ptz, debug)?;
 
     Ok(())
 }
