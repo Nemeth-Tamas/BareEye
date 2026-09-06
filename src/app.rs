@@ -11,6 +11,7 @@ const SLOW_DECODE: Duration = Duration::from_millis(33);
 const SLOW_TEXTURE_UPDATE: Duration = Duration::from_millis(33);
 const SLOW_DISPLAY_GAP: Duration = Duration::from_millis(45);
 const SLOW_UI_GAP: Duration = Duration::from_millis(50);
+const PTZ_BUTTON_COOLDOWN: Duration = Duration::from_millis(200);
 
 pub fn run(
     camera: cameras::Camera,
@@ -312,6 +313,7 @@ struct BareEyeApp {
     ptz: ManualController,
     debug: bool,
     ptz_error: Option<String>,
+    last_ptz_button_at: Option<Instant>,
     last_ui_started: Instant,
     ui_gap_ms: f32,
     ui_gap_peak_ms: f32,
@@ -345,6 +347,7 @@ impl BareEyeApp {
             ptz,
             debug,
             ptz_error: None,
+            last_ptz_button_at: None,
             last_ui_started: Instant::now(),
             ui_gap_ms: 0.0,
             ui_gap_peak_ms: 0.0,
@@ -369,6 +372,17 @@ impl BareEyeApp {
             Ok(()) => self.ptz_error = None,
             Err(error) => self.ptz_error = Some(error),
         }
+    }
+
+    fn ptz_buttons_enabled(&self) -> bool {
+        match self.last_ptz_button_at {
+            Some(last) => last.elapsed() >= PTZ_BUTTON_COOLDOWN,
+            None => true,
+        }
+    }
+
+    fn mark_ptz_button_used(&mut self) {
+        self.last_ptz_button_at = Some(Instant::now());
     }
 
     fn handle_keyboard_ptz(&mut self, ctx: &egui::Context) {
@@ -659,27 +673,49 @@ impl eframe::App for BareEyeApp {
             ui.horizontal(|ui| {
                 ui.strong("PTZ");
 
-                if ui.button("Left").clicked() {
+                let buttons_enabled = self.ptz_buttons_enabled();
+
+                if ui
+                    .add_enabled(buttons_enabled, egui::Button::new("Left"))
+                    .clicked()
+                {
+                    self.mark_ptz_button_used();
                     let result = self.ptz.pan_by(-10.0);
                     self.record_ptz_result(result);
                 }
 
-                if ui.button("Right").clicked() {
+                if ui
+                    .add_enabled(buttons_enabled, egui::Button::new("Right"))
+                    .clicked()
+                {
+                    self.mark_ptz_button_used();
                     let result = self.ptz.pan_by(10.0);
                     self.record_ptz_result(result);
                 }
 
-                if ui.button("Up").clicked() {
+                if ui
+                    .add_enabled(buttons_enabled, egui::Button::new("Up"))
+                    .clicked()
+                {
+                    self.mark_ptz_button_used();
                     let result = self.ptz.tilt_by(5.0);
                     self.record_ptz_result(result);
                 }
 
-                if ui.button("Down").clicked() {
+                if ui
+                    .add_enabled(buttons_enabled, egui::Button::new("Down"))
+                    .clicked()
+                {
+                    self.mark_ptz_button_used();
                     let result = self.ptz.tilt_by(-5.0);
                     self.record_ptz_result(result);
                 }
 
-                if ui.button("Center").clicked() {
+                if ui
+                    .add_enabled(buttons_enabled, egui::Button::new("Center"))
+                    .clicked()
+                {
+                    self.mark_ptz_button_used();
                     let result = self.ptz.center();
                     self.record_ptz_result(result);
                 }
