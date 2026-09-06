@@ -7,7 +7,8 @@ use std::thread;
 use std::time::Duration;
 use windows::Win32::Foundation::{S_FALSE, S_OK};
 use windows::Win32::Media::DirectShow::{
-    CameraControl_Flags_Manual, CameraControl_Pan, CameraControl_Tilt, IAMCameraControl,
+    CameraControl_Flags_Manual, CameraControl_Pan, CameraControl_Tilt, CameraControlFlags,
+    CameraControlProperty, IAMCameraControl,
 };
 use windows::Win32::Media::KernelStreaming::{IKsControl, KSIDENTIFIER};
 use windows::Win32::Media::MediaFoundation::{
@@ -252,7 +253,7 @@ pub fn movement_test(device: &Device) -> Result<(), Box<dyn Error>> {
 fn run_motion_step(
     control: &IAMCameraControl,
     label: &str,
-    property: i32,
+    property: CameraControlProperty,
     value: i32,
 ) -> windows::core::Result<()> {
     println!();
@@ -274,10 +275,10 @@ fn run_motion_step(
 
 fn set_relative(
     control: &IAMCameraControl,
-    property: i32,
+    property: CameraControlProperty,
     value: i32,
 ) -> windows::core::Result<()> {
-    let flags = CameraControl_Flags_Manual | CAMERA_CONTROL_FLAGS_RELATIVE;
+    let flags = CameraControlFlags(CameraControl_Flags_Manual.0 | CAMERA_CONTROL_FLAGS_RELATIVE);
 
     unsafe {
         control.Set(property, value, flags)?;
