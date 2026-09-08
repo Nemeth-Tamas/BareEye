@@ -28,7 +28,8 @@ impl Axis {
 enum WorkerCommand {
     Apply(Controls),
     Relative(Axis, f32),
-    TrackStep { pan: i32, tilt: i32 },
+    TrackVelocity { pan: i32, tilt: i32 },
+    StopTracking,
     ReadPosition,
     Shutdown,
 }
@@ -156,6 +157,8 @@ impl ManualController {
         let worker = thread::Builder::new()
             .name("bareeye-ptz".to_owned())
             .spawn(move || {
+                let mut relative_ptz = None;
+
                 while let Ok(command) = receiver.recv() {
                     match command {
                         WorkerCommand::Apply(controls) => {
@@ -294,19 +297,41 @@ impl ManualController {
 
                             state.last_error = result.err();
                         }
-                        WorkerCommand::TrackStep { pan, tilt } => {
+                        WorkerCommand::TrackVelocity { pan, tilt } => {
                             let started = Instant::now();
 
-                            let result = crate::camera::relative_ptz::apply_tracking_step(
-                                &device, pan, tilt,
-                            );
+                            let controller = relative_ptz.get_or_insert_with(|| {
+                                crate::camera::relative_ptz::RelativePtzController::open(&device)
+                            });
+
+                            let result = match controller {
+                                Ok(controller) => controller.set_speed(pan, tilt),
+                                Err(error) => Err(error.clone()),
+                            };
 
                             let mut state = worker_state
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
 
                             state.last_operation_ms = started.elapsed().as_secs_f32() * 1000.0;
+                            state.last_error = result.err();
 
+                            worker_tracking_pending.store(false, Ordering::Release);
+                        }
+                        WorkerCommand::StopTracking => {
+                            let started = Instant::now();
+
+                            let result = match relative_ptz.as_ref() {
+                                Some(Ok(controller)) => controller.stop(),
+                                Some(Err(error)) => Err(error.clone()),
+                                None => Ok(()),
+                            };
+
+                            let mut state = worker_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                            state.last_operation_ms = started.elapsed().as_secs_f32() * 1000.0;
                             state.last_error = result.err();
 
                             worker_tracking_pending.store(false, Ordering::Release);
@@ -334,7 +359,13 @@ impl ManualController {
                                 }
                             }
                         }
-                        WorkerCommand::Shutdown => break,
+                        WorkerCommand::Shutdown => {
+                            if let Some(Ok(controller)) = relative_ptz.as_ref() {
+                                let _ = controller.stop();
+                            }
+
+                            break;
+                        }
                     }
                 }
             })
@@ -426,21 +457,33 @@ impl ManualController {
         self.tracking_pending.load(Ordering::Acquire)
     }
 
-    pub fn track_step(&self, pan: i32, tilt: i32) -> Result<bool, String> {
+    pub fn track_velocity(&self, pan: i32, tilt: i32) -> Result<bool, String> {
         if pan == 0 && tilt == 0 {
-            return Ok(false);
+            self.stop_tracking()?;
+            return Ok(true);
         }
 
         if self.tracking_pending.swap(true, Ordering::AcqRel) {
             return Ok(false);
         }
 
-        if let Err(error) = self.send(WorkerCommand::TrackStep { pan, tilt }) {
+        if let Err(error) = self.send(WorkerCommand::TrackVelocity { pan, tilt }) {
             self.tracking_pending.store(false, Ordering::Release);
             return Err(error);
         }
 
         Ok(true)
+    }
+
+    pub fn stop_tracking(&self) -> Result<(), String> {
+        self.tracking_pending.store(true, Ordering::Release);
+
+        if let Err(error) = self.send(WorkerCommand::StopTracking) {
+            self.tracking_pending.store(false, Ordering::Release);
+            return Err(error);
+        }
+
+        Ok(())
     }
 
     pub fn zoom_by(&self, amount: f32) -> Result<(), String> {

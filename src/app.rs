@@ -14,9 +14,13 @@ const SLOW_DISPLAY_GAP: Duration = Duration::from_millis(45);
 const SLOW_UI_GAP: Duration = Duration::from_millis(50);
 const PTZ_BUTTON_COOLDOWN: Duration = Duration::from_millis(200);
 
-const TRACKING_COMMAND_INTERVAL: Duration = Duration::from_millis(120);
-const TRACKING_DEADZONE_X: f32 = 0.06;
-const TRACKING_DEADZONE_Y: f32 = 0.10;
+const TRACKING_COMMAND_INTERVAL: Duration = Duration::from_millis(60);
+const TRACKING_DEADZONE_X: f32 = 0.05;
+const TRACKING_DEADZONE_Y: f32 = 0.07;
+
+const TRACKING_NEAR_ERROR: f32 = 0.12;
+const TRACKING_MEDIUM_ERROR: f32 = 0.25;
+const TRACKING_FAR_ERROR: f32 = 0.38;
 
 pub fn run(
     camera: cameras::Camera,
@@ -503,7 +507,8 @@ struct BareEyeApp {
     tracking_enabled: bool,
     last_tracking_command_at: Option<Instant>,
     last_tracking_vision_frame: u64,
-    tracking_prefer_pan: bool,
+    tracking_pan_speed: i32,
+    tracking_tilt_speed: i32,
     debug: bool,
     ptz_error: Option<String>,
     last_ptz_button_at: Option<Instant>,
@@ -544,7 +549,8 @@ impl BareEyeApp {
             tracking_enabled: false,
             last_tracking_command_at: None,
             last_tracking_vision_frame: 0,
-            tracking_prefer_pan: true,
+            tracking_pan_speed: 0,
+            tracking_tilt_speed: 0,
             debug,
             ptz_error: None,
             last_ptz_button_at: None,
@@ -585,24 +591,92 @@ impl BareEyeApp {
         self.last_ptz_button_at = Some(Instant::now());
     }
 
-    fn relative_tracking_step(error: f32, deadzone: f32) -> i32 {
-        if error.abs() <= deadzone {
+    fn tracking_speed(error: f32, deadzone: f32) -> i32 {
+        let magnitude = error.abs();
+
+        if magnitude <= deadzone {
             return 0;
         }
 
-        if error.is_sign_positive() { -1 } else { 1 }
+        let speed = if magnitude < TRACKING_NEAR_ERROR {
+            1
+        } else if magnitude < TRACKING_MEDIUM_ERROR {
+            2
+        } else if magnitude < TRACKING_FAR_ERROR {
+            3
+        } else {
+            4
+        };
+
+        if error.is_sign_positive() {
+            speed
+        } else {
+            -speed
+        }
+    }
+
+    fn stop_tracking_motion(&mut self) {
+        if self.tracking_pan_speed == 0 && self.tracking_tilt_speed == 0 {
+            return;
+        }
+
+        match self.ptz.stop_tracking() {
+            Ok(()) => {
+                self.tracking_pan_speed = 0;
+                self.tracking_tilt_speed = 0;
+                self.last_tracking_command_at = Some(Instant::now());
+                self.ptz_error = None;
+            }
+            Err(error) => {
+                self.ptz_error = Some(error);
+            }
+        }
     }
 
     fn update_tracking(&mut self, vision_frame: u64) {
         if !self.tracking_enabled {
+            self.stop_tracking_motion();
+            return;
+        }
+
+        let target_center = self
+            .selected_target
+            .as_ref()
+            .filter(|target| target.visible)
+            .map(|target| {
+                (
+                    (target.detection.x1 + target.detection.x2) * 0.5,
+                    (target.detection.y1 + target.detection.y2) * 0.5,
+                )
+            });
+
+        let Some((center_x, center_y)) = target_center else {
+            self.stop_tracking_motion();
+            return;
+        };
+
+        if vision_frame == self.last_tracking_vision_frame {
+            return;
+        }
+
+        self.last_tracking_vision_frame = vision_frame;
+
+        let error_x = (center_x - self.info.width as f32 * 0.5) / self.info.width as f32;
+        let error_y = (center_y - self.info.height as f32 * 0.5) / self.info.height as f32;
+
+        let pan_speed = Self::tracking_speed(error_x, TRACKING_DEADZONE_X);
+        let tilt_speed = -Self::tracking_speed(error_y, TRACKING_DEADZONE_Y);
+
+        if pan_speed == self.tracking_pan_speed && tilt_speed == self.tracking_tilt_speed {
+            return;
+        }
+
+        if pan_speed == 0 && tilt_speed == 0 {
+            self.stop_tracking_motion();
             return;
         }
 
         if self.ptz.tracking_busy() {
-            return;
-        }
-
-        if vision_frame == self.last_tracking_vision_frame {
             return;
         }
 
@@ -613,46 +687,11 @@ impl BareEyeApp {
             return;
         }
 
-        self.last_tracking_vision_frame = vision_frame;
-
-        let Some(target) = self
-            .selected_target
-            .as_ref()
-            .filter(|target| target.visible)
-        else {
-            return;
-        };
-
-        let center_x = (target.detection.x1 + target.detection.x2) * 0.5;
-
-        let center_y = (target.detection.y1 + target.detection.y2) * 0.5;
-
-        let error_x = (center_x - self.info.width as f32 * 0.5) / self.info.width as f32;
-
-        let error_y = (center_y - self.info.height as f32 * 0.5) / self.info.height as f32;
-
-        let pan_step = Self::relative_tracking_step(error_x, TRACKING_DEADZONE_X);
-
-        let tilt_step = Self::relative_tracking_step(error_y, TRACKING_DEADZONE_Y);
-
-        let (pan_command, tilt_command) = if pan_step != 0 && tilt_step != 0 {
-            let command = if self.tracking_prefer_pan {
-                (pan_step, 0)
-            } else {
-                (0, tilt_step)
-            };
-
-            self.tracking_prefer_pan = !self.tracking_prefer_pan;
-
-            command
-        } else {
-            (pan_step, tilt_step)
-        };
-
-        match self.ptz.track_step(pan_command, tilt_command) {
+        match self.ptz.track_velocity(pan_speed, tilt_speed) {
             Ok(true) => {
+                self.tracking_pan_speed = pan_speed;
+                self.tracking_tilt_speed = tilt_speed;
                 self.last_tracking_command_at = Some(Instant::now());
-
                 self.ptz_error = None;
             }
             Ok(false) => {}
@@ -1213,6 +1252,8 @@ impl eframe::App for BareEyeApp {
 
 impl Drop for BareEyeApp {
     fn drop(&mut self) {
+        let _ = self.ptz.stop_tracking();
+
         if let Some(stream) = self.stream.take() {
             stream.stop();
         }
