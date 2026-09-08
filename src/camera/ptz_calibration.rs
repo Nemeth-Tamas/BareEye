@@ -6,9 +6,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const CALIBRATION_REPEATS: usize = 3;
-const CALIBRATION_MOVE_TIME: Duration = Duration::from_millis(200);
-const CALIBRATION_SETTLE_TIME: Duration = Duration::from_millis(400);
-const CALIBRATION_HOME_SETTLE_TIME: Duration = Duration::from_millis(250);
+const CALIBRATION_MOVE_TIME: Duration = Duration::from_millis(1000);
+const CALIBRATION_SETTLE_TIME: Duration = Duration::from_millis(500);
+const CALIBRATION_HOME_SETTLE_TIME: Duration = Duration::from_millis(350);
 const CALIBRATION_HOME_POLL: Duration = Duration::from_millis(50);
 const CALIBRATION_HOME_TIMEOUT: Duration = Duration::from_secs(8);
 

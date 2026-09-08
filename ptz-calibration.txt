@@ -1,0 +1,266 @@
+   Compiling bareeye v0.1.0 (C:\Users\User\Desktop\randomprojectsillneverfinish\BareEye)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.98s
+     Running `target\debug\bareeye.exe --ptz-relative-calibrate`
+
+Video devices found: 1
+
+[0] Polycom EagleEye IV USB Camera
+    Device ID: \\?\usb#vid_095d&pid_9204&mi_00#b&1da1f946&0&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\global
+
+Searching for an EagleEye candidate...
+
+BareEye automatic relative PTZ calibration
+==========================================
+Device: Polycom EagleEye IV USB Camera
+Original position: pan=0.0, tilt=0.0
+Calibration home: pan=0.0, tilt=30.0
+Motion time: 200 ms | repeats: 3
+
+PAN + speed 1
+----------------
+  trial 1: start=0.0 end=0.0 delta=+0.0 | 241 ms | 0.00 deg/s
+  trial 2: start=0.0 end=1.0 delta=+1.0 | 232 ms | 4.31 deg/s
+  trial 3: start=0.0 end=1.0 delta=+1.0 | 225 ms | 4.45 deg/s
+  AVG: delta=+0.67 deg | rate=2.92 deg/s | range=0.00..4.45
+
+PAN - speed 1
+----------------
+  trial 1: start=1.0 end=1.0 delta=+0.0 | 225 ms | 0.00 deg/s
+  trial 2: start=0.0 end=-1.0 delta=-1.0 | 231 ms | 4.33 deg/s
+  trial 3: start=0.0 end=-1.0 delta=-1.0 | 242 ms | 4.13 deg/s
+  AVG: delta=-0.67 deg | rate=2.82 deg/s | range=0.00..4.33
+
+PAN + speed 2
+----------------
+  trial 1: start=0.0 end=1.0 delta=+1.0 | 242 ms | 4.13 deg/s
+  trial 2: start=0.0 end=0.0 delta=+0.0 | 242 ms | 0.00 deg/s
+  trial 3: start=0.0 end=1.0 delta=+1.0 | 233 ms | 4.29 deg/s
+  AVG: delta=+0.67 deg | rate=2.81 deg/s | range=0.00..4.29
+
+PAN - speed 2
+----------------
+  trial 1: start=0.0 end=0.0 delta=+0.0 | 227 ms | 0.00 deg/s
+  trial 2: start=0.0 end=-1.0 delta=-1.0 | 225 ms | 4.45 deg/s
+  trial 3: start=0.0 end=-1.0 delta=-1.0 | 225 ms | 4.44 deg/s
+  AVG: delta=-0.67 deg | rate=2.96 deg/s | range=0.00..4.45
+
+PAN + speed 4
+----------------
+  trial 1: start=0.0 end=1.0 delta=+1.0 | 225 ms | 4.45 deg/s
+  trial 2: start=0.0 end=0.0 delta=+0.0 | 225 ms | 0.00 deg/s
+  trial 3: start=0.0 end=1.0 delta=+1.0 | 225 ms | 4.45 deg/s
+  AVG: delta=+0.67 deg | rate=2.96 deg/s | range=0.00..4.45
+
+PAN - speed 4
+----------------
+  trial 1: start=0.0 end=0.0 delta=+0.0 | 225 ms | 0.00 deg/s
+  trial 2: start=0.0 end=-1.0 delta=-1.0 | 227 ms | 4.41 deg/s
+  trial 3: start=0.0 end=-1.0 delta=-1.0 | 225 ms | 4.45 deg/s
+  AVG: delta=-0.67 deg | rate=2.95 deg/s | range=0.00..4.45
+
+PAN + speed 8
+----------------
+  trial 1: start=0.0 end=1.0 delta=+1.0 | 225 ms | 4.45 deg/s
+  trial 2: start=0.0 end=0.0 delta=+0.0 | 228 ms | 0.00 deg/s
+  trial 3: start=0.0 end=1.0 delta=+1.0 | 242 ms | 4.13 deg/s
+  AVG: delta=+0.67 deg | rate=2.86 deg/s | range=0.00..4.45
+
+PAN - speed 8
+----------------
+  trial 1: start=0.0 end=0.0 delta=+0.0 | 242 ms | 0.00 deg/s
+  trial 2: start=0.0 end=-1.0 delta=-1.0 | 225 ms | 4.45 deg/s
+  trial 3: start=0.0 end=0.0 delta=+0.0 | 225 ms | 0.00 deg/s
+  AVG: delta=-0.33 deg | rate=1.48 deg/s | range=0.00..4.45
+
+PAN + speed 12
+----------------
+  trial 1: start=0.0 end=1.0 delta=+1.0 | 228 ms | 4.39 deg/s
+  trial 2: start=0.0 end=1.0 delta=+1.0 | 225 ms | 4.45 deg/s
+  trial 3: start=0.0 end=1.0 delta=+1.0 | 232 ms | 4.31 deg/s
+  AVG: delta=+1.00 deg | rate=4.38 deg/s | range=4.31..4.45
+
+PAN - speed 12
+----------------
+  trial 1: start=0.0 end=-1.0 delta=-1.0 | 242 ms | 4.13 deg/s
+  trial 2: start=0.0 end=-1.0 delta=-1.0 | 243 ms | 4.12 deg/s
+  trial 3: start=0.0 end=0.0 delta=+0.0 | 231 ms | 0.00 deg/s
+  AVG: delta=-0.67 deg | rate=2.75 deg/s | range=0.00..4.13
+
+PAN + speed 16
+----------------
+  trial 1: start=0.0 end=1.0 delta=+1.0 | 232 ms | 4.31 deg/s
+  trial 2: start=0.0 end=1.0 delta=+1.0 | 225 ms | 4.45 deg/s
+  trial 3: start=0.0 end=0.0 delta=+0.0 | 225 ms | 0.00 deg/s
+  AVG: delta=+0.67 deg | rate=2.92 deg/s | range=0.00..4.45
+
+PAN - speed 16
+----------------
+  trial 1: start=0.0 end=-1.0 delta=-1.0 | 225 ms | 4.45 deg/s
+  trial 2: start=0.0 end=0.0 delta=+0.0 | 243 ms | 0.00 deg/s
+  trial 3: start=0.0 end=-1.0 delta=-1.0 | 225 ms | 4.45 deg/s
+  AVG: delta=-0.67 deg | rate=2.96 deg/s | range=0.00..4.45
+
+PAN + speed 20
+----------------
+  trial 1: start=0.0 end=0.0 delta=+0.0 | 229 ms | 0.00 deg/s
+  trial 2: start=0.0 end=1.0 delta=+1.0 | 232 ms | 4.31 deg/s
+  trial 3: start=0.0 end=0.0 delta=+0.0 | 227 ms | 0.00 deg/s
+  AVG: delta=+0.33 deg | rate=1.44 deg/s | range=0.00..4.31
+
+PAN - speed 20
+----------------
+  trial 1: start=0.0 end=-1.0 delta=-1.0 | 232 ms | 4.31 deg/s
+  trial 2: start=0.0 end=-1.0 delta=-1.0 | 242 ms | 4.13 deg/s
+  trial 3: start=0.0 end=0.0 delta=+0.0 | 242 ms | 0.00 deg/s
+  AVG: delta=-0.67 deg | rate=2.82 deg/s | range=0.00..4.31
+
+PAN + speed 24
+----------------
+  trial 1: start=0.0 end=1.0 delta=+1.0 | 246 ms | 4.07 deg/s
+  trial 2: start=0.0 end=0.0 delta=+0.0 | 243 ms | 0.00 deg/s
+  trial 3: start=0.0 end=1.0 delta=+1.0 | 225 ms | 4.44 deg/s
+  AVG: delta=+0.67 deg | rate=2.84 deg/s | range=0.00..4.44
+
+PAN - speed 24
+----------------
+  trial 1: start=0.0 end=0.0 delta=+0.0 | 225 ms | 0.00 deg/s
+  trial 2: start=0.0 end=-1.0 delta=-1.0 | 225 ms | 4.44 deg/s
+  trial 3: start=0.0 end=0.0 delta=+0.0 | 225 ms | 0.00 deg/s
+  AVG: delta=-0.33 deg | rate=1.48 deg/s | range=0.00..4.44
+
+TILT + speed 1
+----------------
+  trial 1: start=30.0 end=31.0 delta=+1.0 | 225 ms | 4.45 deg/s
+  trial 2: start=30.0 end=30.0 delta=+0.0 | 241 ms | 0.00 deg/s
+  trial 3: start=30.0 end=31.0 delta=+1.0 | 226 ms | 4.43 deg/s
+  AVG: delta=+0.67 deg | rate=2.96 deg/s | range=0.00..4.45
+
+TILT - speed 1
+----------------
+  trial 1: start=30.0 end=29.0 delta=-1.0 | 228 ms | 4.39 deg/s
+  trial 2: start=30.0 end=28.0 delta=-2.0 | 232 ms | 8.62 deg/s
+  trial 3: start=29.0 end=29.0 delta=+0.0 | 225 ms | 0.00 deg/s
+  AVG: delta=-1.00 deg | rate=4.34 deg/s | range=0.00..8.62
+
+TILT + speed 2
+----------------
+  trial 1: start=30.0 end=31.0 delta=+1.0 | 245 ms | 4.08 deg/s
+  trial 2: start=30.0 end=31.0 delta=+1.0 | 225 ms | 4.45 deg/s
+  trial 3: start=30.0 end=30.0 delta=+0.0 | 227 ms | 0.00 deg/s
+  AVG: delta=+0.67 deg | rate=2.84 deg/s | range=0.00..4.45
+
+TILT - speed 2
+----------------
+  trial 1: start=30.0 end=28.0 delta=-2.0 | 241 ms | 8.30 deg/s
+  trial 2: start=29.0 end=29.0 delta=+0.0 | 225 ms | 0.00 deg/s
+  trial 3: start=30.0 end=28.0 delta=-2.0 | 225 ms | 8.89 deg/s
+  AVG: delta=-1.33 deg | rate=5.73 deg/s | range=0.00..8.89
+
+TILT + speed 4
+----------------
+  trial 1: start=29.0 end=31.0 delta=+2.0 | 225 ms | 8.89 deg/s
+  trial 2: start=30.0 end=31.0 delta=+1.0 | 225 ms | 4.45 deg/s
+  trial 3: start=30.0 end=31.0 delta=+1.0 | 225 ms | 4.44 deg/s
+  AVG: delta=+1.33 deg | rate=5.93 deg/s | range=4.44..8.89
+
+TILT - speed 4
+----------------
+  trial 1: start=30.0 end=28.0 delta=-2.0 | 227 ms | 8.81 deg/s
+  trial 2: start=29.0 end=29.0 delta=+0.0 | 225 ms | 0.00 deg/s
+  trial 3: start=30.0 end=28.0 delta=-2.0 | 245 ms | 8.16 deg/s
+  AVG: delta=-1.33 deg | rate=5.66 deg/s | range=0.00..8.81
+
+TILT + speed 8
+----------------
+  trial 1: start=29.0 end=30.0 delta=+1.0 | 225 ms | 4.44 deg/s
+  trial 2: start=30.0 end=31.0 delta=+1.0 | 225 ms | 4.45 deg/s
+  trial 3: start=30.0 end=31.0 delta=+1.0 | 232 ms | 4.31 deg/s
+  AVG: delta=+1.00 deg | rate=4.40 deg/s | range=4.31..4.45
+
+TILT - speed 8
+----------------
+  trial 1: start=30.0 end=28.0 delta=-2.0 | 225 ms | 8.89 deg/s
+  trial 2: start=29.0 end=28.0 delta=-1.0 | 231 ms | 4.33 deg/s
+  trial 3: start=29.0 end=29.0 delta=+0.0 | 225 ms | 0.00 deg/s
+  AVG: delta=-1.00 deg | rate=4.41 deg/s | range=0.00..8.89
+
+TILT + speed 12
+----------------
+  trial 1: start=30.0 end=31.0 delta=+1.0 | 225 ms | 4.44 deg/s
+  trial 2: start=30.0 end=31.0 delta=+1.0 | 226 ms | 4.43 deg/s
+  trial 3: start=30.0 end=31.0 delta=+1.0 | 225 ms | 4.45 deg/s
+  AVG: delta=+1.00 deg | rate=4.44 deg/s | range=4.43..4.45
+
+TILT - speed 12
+----------------
+  trial 1: start=30.0 end=28.0 delta=-2.0 | 225 ms | 8.89 deg/s
+  trial 2: start=29.0 end=28.0 delta=-1.0 | 242 ms | 4.13 deg/s
+  trial 3: start=29.0 end=29.0 delta=+0.0 | 242 ms | 0.00 deg/s
+  AVG: delta=-1.00 deg | rate=4.34 deg/s | range=0.00..8.89
+
+TILT + speed 16
+----------------
+  trial 1: start=30.0 end=31.0 delta=+1.0 | 225 ms | 4.44 deg/s
+  trial 2: start=30.0 end=30.0 delta=+0.0 | 242 ms | 0.00 deg/s
+  trial 3: start=30.0 end=31.0 delta=+1.0 | 225 ms | 4.45 deg/s
+  AVG: delta=+0.67 deg | rate=2.96 deg/s | range=0.00..4.45
+
+TILT - speed 16
+----------------
+  trial 1: start=30.0 end=29.0 delta=-1.0 | 232 ms | 4.31 deg/s
+  trial 2: start=30.0 end=28.0 delta=-2.0 | 225 ms | 8.89 deg/s
+  trial 3: start=29.0 end=28.0 delta=-1.0 | 243 ms | 4.12 deg/s
+  AVG: delta=-1.33 deg | rate=5.77 deg/s | range=4.12..8.89
+
+TILT + speed 20
+----------------
+  trial 1: start=29.0 end=30.0 delta=+1.0 | 243 ms | 4.11 deg/s
+  trial 2: start=30.0 end=31.0 delta=+1.0 | 225 ms | 4.44 deg/s
+  trial 3: start=30.0 end=30.0 delta=+0.0 | 242 ms | 0.00 deg/s
+  AVG: delta=+0.67 deg | rate=2.85 deg/s | range=0.00..4.44
+
+TILT - speed 20
+----------------
+  trial 1: start=30.0 end=28.0 delta=-2.0 | 243 ms | 8.23 deg/s
+  trial 2: start=29.0 end=29.0 delta=+0.0 | 230 ms | 0.00 deg/s
+  trial 3: start=30.0 end=28.0 delta=-2.0 | 241 ms | 8.30 deg/s
+  AVG: delta=-1.33 deg | rate=5.51 deg/s | range=0.00..8.30
+
+Restoring original camera position...
+
+Calibration summary
+===================
+axis,direction,command_speed,avg_delta_deg,avg_abs_deg_s,min_abs_deg_s,max_abs_deg_s
+PAN,+,1,0.667,2.919,0.000,4.445
+PAN,-,1,-0.667,2.821,0.000,4.330
+PAN,+,2,0.667,2.809,0.000,4.293
+PAN,-,2,-0.667,2.964,0.000,4.446
+PAN,+,4,0.667,2.964,0.000,4.446
+PAN,-,4,-0.667,2.950,0.000,4.445
+PAN,+,8,0.667,2.860,0.000,4.446
+PAN,-,8,-0.333,1.482,0.000,4.446
+PAN,+,12,1.000,4.381,4.311,4.446
+PAN,-,12,-0.667,2.752,0.000,4.133
+PAN,+,16,0.667,2.919,0.000,4.446
+PAN,-,16,-0.667,2.964,0.000,4.446
+PAN,+,20,0.333,1.437,0.000,4.311
+PAN,-,20,-0.667,2.815,0.000,4.311
+PAN,+,24,0.667,2.837,0.000,4.445
+PAN,-,24,-0.333,1.482,0.000,4.445
+TILT,+,1,0.667,2.957,0.000,4.445
+TILT,-,1,-1.000,4.337,0.000,8.622
+TILT,+,2,0.667,2.843,0.000,4.446
+TILT,-,2,-1.333,5.730,0.000,8.890
+TILT,+,4,1.333,5.927,4.444,8.891
+TILT,-,4,-1.333,5.659,0.000,8.812
+TILT,+,8,1.000,4.400,4.311,4.445
+TILT,-,8,-1.000,4.406,0.000,8.889
+TILT,+,12,1.000,4.438,4.426,4.445
+TILT,-,12,-1.000,4.341,0.000,8.890
+TILT,+,16,0.667,2.963,0.000,4.446
+TILT,-,16,-1.333,5.773,4.116,8.890
+TILT,+,20,0.667,2.852,0.000,4.445
+TILT,-,20,-1.333,5.511,0.000,8.301
+
+Calibration complete.
+Camera restored to pan=0.0, tilt=0.0
