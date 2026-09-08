@@ -37,7 +37,6 @@ const TILT_RELATIVE_PROPERTY_ID: u32 = 11;
 const PANTILT_RELATIVE_PROPERTY_ID: u32 = 17;
 
 const PROPERTY_TYPE_GET: u32 = 1;
-const PROPERTY_TYPE_SET: u32 = 2;
 const PROPERTY_TYPE_BASICSUPPORT: u32 = 512;
 
 #[repr(C, align(8))]
@@ -47,20 +46,6 @@ struct KsPropertyRaw {
     id: u32,
     flags: u32,
 }
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct KsCameraControlRaw {
-    set: GUID,
-    id: u32,
-    property_flags: u32,
-    value: i32,
-    camera_flags: u32,
-    capabilities: u32,
-}
-
-const KS_CAMERA_CONTROL_FLAGS_MANUAL: u32 = 0x0002;
-const KS_CAMERA_CONTROL_FLAGS_RELATIVE: u32 = 0x0010;
 
 const CAMERA_CONTROL_FLAGS_RELATIVE: i32 = 0x0010;
 const ERROR_BUSY_HRESULT: i32 = 0x800700AAu32 as i32;
@@ -442,158 +427,6 @@ fn run_controller_step(
     thread::sleep(Duration::from_millis(700));
 
     Ok(())
-}
-
-fn probe_set_buffer_requirements(control: &IKsControl, label: &str, property_id: u32) {
-    println!("{label} SET buffer probe");
-    println!("------------------------------");
-
-    let bare_property = KsPropertyRaw {
-        set: CAMERA_CONTROL_PROPERTY_SET,
-        id: property_id,
-        flags: PROPERTY_TYPE_SET,
-    };
-
-    let full_property = KsCameraControlRaw {
-        set: CAMERA_CONTROL_PROPERTY_SET,
-        id: property_id,
-        property_flags: PROPERTY_TYPE_SET,
-        value: 0,
-        camera_flags: 0,
-        capabilities: 0,
-    };
-
-    probe_set_descriptor(
-        control,
-        "24-byte KSPROPERTY descriptor",
-        &bare_property as *const KsPropertyRaw as *const KSIDENTIFIER,
-        size_of::<KsPropertyRaw>() as u32,
-    );
-
-    probe_set_descriptor(
-        control,
-        "36-byte CAMERACONTROL descriptor",
-        &full_property as *const KsCameraControlRaw as *const KSIDENTIFIER,
-        size_of::<KsCameraControlRaw>() as u32,
-    );
-}
-
-fn probe_set_descriptor(
-    control: &IKsControl,
-    label: &str,
-    property: *const KSIDENTIFIER,
-    property_length: u32,
-) {
-    let mut bytes_returned = 0u32;
-
-    let result = unsafe {
-        control.KsProperty(
-            property,
-            property_length,
-            std::ptr::null_mut(),
-            0,
-            &mut bytes_returned,
-        )
-    };
-
-    match result {
-        Ok(()) => {
-            println!("  {label}: SUCCESS, required data bytes = {bytes_returned}");
-        }
-        Err(error) => {
-            println!(
-                "  {label}: HRESULT=0x{:08X}, required data bytes = {}",
-                error.code().0 as u32,
-                bytes_returned
-            );
-
-            println!("    {error}");
-        }
-    }
-}
-
-fn run_ks_motion_step(
-    control: &IKsControl,
-    label: &str,
-    property_id: u32,
-    value: i32,
-) -> windows::core::Result<()> {
-    println!();
-    println!("{label}");
-    println!("  START speed {value}");
-
-    set_ks_relative(control, property_id, value)?;
-
-    thread::sleep(Duration::from_millis(500));
-
-    println!("  STOP");
-
-    set_ks_relative(control, property_id, 0)?;
-
-    thread::sleep(Duration::from_millis(700));
-
-    Ok(())
-}
-
-fn set_ks_relative(
-    control: &IKsControl,
-    property_id: u32,
-    value: i32,
-) -> windows::core::Result<()> {
-    debug_assert_eq!(size_of::<KsCameraControlRaw>(), 36);
-
-    let property = KsCameraControlRaw {
-        set: CAMERA_CONTROL_PROPERTY_SET,
-        id: property_id,
-        property_flags: PROPERTY_TYPE_SET,
-        value: 0,
-        camera_flags: 0,
-        capabilities: 0,
-    };
-
-    let mut data = KsCameraControlRaw {
-        set: CAMERA_CONTROL_PROPERTY_SET,
-        id: property_id,
-        property_flags: PROPERTY_TYPE_SET,
-        value,
-        camera_flags: KS_CAMERA_CONTROL_FLAGS_MANUAL | KS_CAMERA_CONTROL_FLAGS_RELATIVE,
-        capabilities: 0,
-    };
-
-    let mut bytes_returned = 0u32;
-
-    unsafe {
-        control.KsProperty(
-            &property as *const KsCameraControlRaw as *const KSIDENTIFIER,
-            size_of::<KsCameraControlRaw>() as u32,
-            &mut data as *mut KsCameraControlRaw as *mut c_void,
-            size_of::<KsCameraControlRaw>() as u32,
-            &mut bytes_returned,
-        )?;
-    }
-
-    Ok(())
-}
-
-fn stop_ks_relative(control: &IKsControl) -> windows::core::Result<()> {
-    let pan_result = set_ks_relative(control, PAN_RELATIVE_PROPERTY_ID, 0);
-
-    let tilt_result = set_ks_relative(control, TILT_RELATIVE_PROPERTY_ID, 0);
-
-    pan_result?;
-    tilt_result?;
-
-    Ok(())
-}
-
-struct KsRelativeStopGuard<'a> {
-    control: &'a IKsControl,
-}
-
-impl Drop for KsRelativeStopGuard<'_> {
-    fn drop(&mut self) {
-        let _ = stop_ks_relative(self.control);
-    }
 }
 
 fn set_relative(
