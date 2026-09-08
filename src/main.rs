@@ -58,6 +58,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
+    if arguments
+        .iter()
+        .any(|argument| argument == "--ptz-relative-calibrate")
+    {
+        camera::ptz_calibration::run(eagleeye)?;
+        return Ok(());
+    }
+
     let ptz = camera::ptz::ManualController::new(eagleeye.clone())?;
     let (camera, preview_info) = camera::open_preview(eagleeye)?;
 
