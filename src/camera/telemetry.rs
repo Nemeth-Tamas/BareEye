@@ -73,12 +73,11 @@ impl StreamTelemetry {
             self.format_anomalies += 1;
         }
 
-        if let Some(previous_timestamp) = self.last_timestamp {
-            if frame.timestamp < previous_timestamp
-                || frame.timestamp.saturating_sub(previous_timestamp) > TIMING_GAP_THRESHOLD
-            {
-                self.timing_anomalies += 1;
-            }
+        if let Some(previous_timestamp) = self.last_timestamp
+            && (frame.timestamp < previous_timestamp
+                || frame.timestamp.saturating_sub(previous_timestamp) > TIMING_GAP_THRESHOLD)
+        {
+            self.timing_anomalies += 1;
         }
 
         self.last_timestamp = Some(frame.timestamp);

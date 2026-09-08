@@ -14,13 +14,9 @@ const SLOW_DISPLAY_GAP: Duration = Duration::from_millis(45);
 const SLOW_UI_GAP: Duration = Duration::from_millis(50);
 const PTZ_BUTTON_COOLDOWN: Duration = Duration::from_millis(200);
 
-const TRACKING_COMMAND_INTERVAL: Duration = Duration::from_millis(60);
-const TRACKING_DEADZONE_X: f32 = 0.05;
-const TRACKING_DEADZONE_Y: f32 = 0.07;
-
-const TRACKING_NEAR_ERROR: f32 = 0.12;
-const TRACKING_MEDIUM_ERROR: f32 = 0.25;
-const TRACKING_FAR_ERROR: f32 = 0.38;
+const TRACKING_COMMAND_INTERVAL: Duration = Duration::from_millis(100);
+const TRACKING_DEADZONE_X: f32 = 0.08;
+const TRACKING_DEADZONE_Y: f32 = 0.10;
 
 pub fn run(
     camera: cameras::Camera,
@@ -120,18 +116,18 @@ impl SelectedTarget {
 
             if best
                 .as_ref()
-                .map_or(true, |(_, best_distance)| distance < *best_distance)
+                .is_none_or(|(_, best_distance)| distance < *best_distance)
             {
                 best = Some((detection, distance));
             }
         }
 
-        if let Some((detection, distance)) = best {
-            if distance <= maximum_distance {
-                self.detection = detection.clone();
-                self.visible = true;
-                return;
-            }
+        if let Some((detection, distance)) = best
+            && distance <= maximum_distance
+        {
+            self.detection = detection.clone();
+            self.visible = true;
+            return;
         }
 
         self.visible = false;
@@ -256,16 +252,16 @@ impl PreviewStream {
 
             let detection_rect = egui::Rect::from_min_max(top_left, bottom_right);
 
-            if let Some(position) = click_position {
-                if detection_rect.contains(position) {
-                    let area = detection_rect.width() * detection_rect.height();
+            if let Some(position) = click_position
+                && detection_rect.contains(position)
+            {
+                let area = detection_rect.width() * detection_rect.height();
 
-                    if clicked_detection
-                        .as_ref()
-                        .map_or(true, |(best_area, _)| area < *best_area)
-                    {
-                        clicked_detection = Some((area, detection.clone()));
-                    }
+                if clicked_detection
+                    .as_ref()
+                    .is_none_or(|(best_area, _)| area < *best_area)
+                {
+                    clicked_detection = Some((area, detection.clone()));
                 }
             }
 
@@ -592,27 +588,11 @@ impl BareEyeApp {
     }
 
     fn tracking_speed(error: f32, deadzone: f32) -> i32 {
-        let magnitude = error.abs();
-
-        if magnitude <= deadzone {
+        if error.abs() <= deadzone {
             return 0;
         }
 
-        let speed = if magnitude < TRACKING_NEAR_ERROR {
-            1
-        } else if magnitude < TRACKING_MEDIUM_ERROR {
-            2
-        } else if magnitude < TRACKING_FAR_ERROR {
-            3
-        } else {
-            4
-        };
-
-        if error.is_sign_positive() {
-            speed
-        } else {
-            -speed
-        }
+        if error.is_sign_positive() { 1 } else { -1 }
     }
 
     fn stop_tracking_motion(&mut self) {
@@ -666,6 +646,19 @@ impl BareEyeApp {
 
         let pan_speed = Self::tracking_speed(error_x, TRACKING_DEADZONE_X);
         let tilt_speed = -Self::tracking_speed(error_y, TRACKING_DEADZONE_Y);
+
+        let pan_reversing = self.tracking_pan_speed != 0
+            && pan_speed != 0
+            && self.tracking_pan_speed.signum() != pan_speed.signum();
+
+        let tilt_reversing = self.tracking_tilt_speed != 0
+            && tilt_speed != 0
+            && self.tracking_tilt_speed.signum() != tilt_speed.signum();
+
+        if pan_reversing || tilt_reversing {
+            self.stop_tracking_motion();
+            return;
+        }
 
         if pan_speed == self.tracking_pan_speed && tilt_speed == self.tracking_tilt_speed {
             return;
