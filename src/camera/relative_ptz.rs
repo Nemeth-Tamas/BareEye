@@ -6,7 +6,6 @@ use std::mem::{size_of, size_of_val};
 use std::thread;
 use std::time::Duration;
 use windows::Win32::Foundation::{S_FALSE, S_OK};
-use windows::Win32::Media::DirectShow::CameraControl_Flags_Manual;
 use windows::Win32::Media::KernelStreaming::{IKsControl, IKsTopologyInfo, KSIDENTIFIER};
 use windows::Win32::Media::MediaFoundation::{
     IMFActivate, IMFMediaSource, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
@@ -325,7 +324,7 @@ fn call_raw_relative(control: &IUnknown, slot: usize, value: i32) -> windows::co
 
     let function: PutRelativeFn = unsafe { std::mem::transmute(function_pointer) };
 
-    let result = unsafe { function(raw, value, CameraControl_Flags_Manual.0) };
+    let result = unsafe { function(raw, value, 0) };
 
     result.ok()
 }
