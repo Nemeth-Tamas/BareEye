@@ -114,6 +114,7 @@ enum WorkerCommand {
     Apply(Controls),
     Relative(Axis, f32),
     TrackVelocity { pan: i32, tilt: i32 },
+    TrackAbsolute { pan_delta: f32, tilt_delta: f32 },
     StopTracking,
     ReadPosition,
     Shutdown,
@@ -425,6 +426,110 @@ impl ManualController {
 
                                 worker_tracking_pending.store(false, Ordering::Release);
                             }
+                            WorkerCommand::TrackAbsolute {
+                                pan_delta,
+                                tilt_delta,
+                            } => {
+                                tracking_pwm.clear();
+
+                                let _ = apply_tracking_output(&mut relative_ptz, &device, 0, 0);
+
+                                let started = Instant::now();
+
+                                let result = (|| -> Result<(), String> {
+                                    let current = cameras::read_controls(&device)
+                                        .map_err(|error| error.to_string())?;
+
+                                    {
+                                        let mut state = worker_state
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                                        state.actual_pan = current.pan;
+                                        state.actual_tilt = current.tilt;
+                                        state.actual_zoom = current.zoom;
+                                    }
+
+                                    let pan_target = if pan_delta.abs() > f32::EPSILON {
+                                        let Some(range) = worker_capabilities.pan else {
+                                            return Err(
+                                                "Pan is not supported by this camera.".to_owned()
+                                            );
+                                        };
+
+                                        let actual = current.pan.unwrap_or(range.default);
+
+                                        Some(snap_to_step(
+                                            (actual + pan_delta).clamp(range.min, range.max),
+                                            range,
+                                        ))
+                                    } else {
+                                        None
+                                    };
+
+                                    let tilt_target = if tilt_delta.abs() > f32::EPSILON {
+                                        let Some(range) = worker_capabilities.tilt else {
+                                            return Err(
+                                                "Tilt is not supported by this camera.".to_owned()
+                                            );
+                                        };
+
+                                        let actual = current.tilt.unwrap_or(range.default);
+
+                                        Some(snap_to_step(
+                                            (actual + tilt_delta).clamp(range.min, range.max),
+                                            range,
+                                        ))
+                                    } else {
+                                        None
+                                    };
+
+                                    if pan_target.is_none() && tilt_target.is_none() {
+                                        return Ok(());
+                                    }
+
+                                    let controls = Controls {
+                                        pan: pan_target,
+                                        tilt: tilt_target,
+                                        ..Default::default()
+                                    };
+
+                                    cameras::apply_controls(&device, &controls)
+                                        .map_err(|error| error.to_string())?;
+
+                                    {
+                                        let mut state = worker_state
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                                        if let Some(target) = pan_target {
+                                            state.target_pan = target;
+                                        }
+
+                                        if let Some(target) = tilt_target {
+                                            state.target_tilt = target;
+                                        }
+                                    }
+
+                                    wait_for_worker_targets(
+                                        &device,
+                                        &worker_capabilities,
+                                        &worker_state,
+                                        pan_target,
+                                        tilt_target,
+                                        None,
+                                    )
+                                })();
+
+                                let mut state = worker_state
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                                state.last_operation_ms = started.elapsed().as_secs_f32() * 1000.0;
+                                state.last_error = result.err();
+
+                                worker_tracking_pending.store(false, Ordering::Release);
+                            }
                             WorkerCommand::StopTracking => {
                                 tracking_pwm.clear();
 
@@ -586,6 +691,26 @@ impl ManualController {
         }
 
         if let Err(error) = self.send(WorkerCommand::TrackVelocity { pan, tilt }) {
+            self.tracking_pending.store(false, Ordering::Release);
+            return Err(error);
+        }
+
+        Ok(true)
+    }
+
+    pub fn track_absolute_offset(&self, pan_delta: f32, tilt_delta: f32) -> Result<bool, String> {
+        if pan_delta.abs() <= f32::EPSILON && tilt_delta.abs() <= f32::EPSILON {
+            return Ok(false);
+        }
+
+        if self.tracking_pending.swap(true, Ordering::AcqRel) {
+            return Ok(false);
+        }
+
+        if let Err(error) = self.send(WorkerCommand::TrackAbsolute {
+            pan_delta,
+            tilt_delta,
+        }) {
             self.tracking_pending.store(false, Ordering::Release);
             return Err(error);
         }

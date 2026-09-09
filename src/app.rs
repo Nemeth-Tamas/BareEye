@@ -15,8 +15,15 @@ const SLOW_UI_GAP: Duration = Duration::from_millis(50);
 const PTZ_BUTTON_COOLDOWN: Duration = Duration::from_millis(200);
 
 const TRACKING_COMMAND_INTERVAL: Duration = Duration::from_millis(100);
-const TRACKING_DEADZONE_X: f32 = 0.08;
-const TRACKING_DEADZONE_Y: f32 = 0.10;
+
+const TRACKING_DEADZONE_X: f32 = 0.04;
+const TRACKING_DEADZONE_Y: f32 = 0.05;
+
+const TRACKING_ABSOLUTE_THRESHOLD_X: f32 = 0.18;
+const TRACKING_ABSOLUTE_THRESHOLD_Y: f32 = 0.16;
+
+const TRACKING_ABSOLUTE_PAN_GAIN_DEG: f32 = 65.0;
+const TRACKING_ABSOLUTE_TILT_GAIN_DEG: f32 = 40.0;
 
 pub fn run(
     camera: cameras::Camera,
@@ -643,6 +650,40 @@ impl BareEyeApp {
 
         let error_x = (center_x - self.info.width as f32 * 0.5) / self.info.width as f32;
         let error_y = (center_y - self.info.height as f32 * 0.5) / self.info.height as f32;
+
+        let needs_absolute_recenter = error_x.abs() >= TRACKING_ABSOLUTE_THRESHOLD_X
+            || error_y.abs() >= TRACKING_ABSOLUTE_THRESHOLD_Y;
+
+        if needs_absolute_recenter {
+            if self.ptz.tracking_busy() {
+                return;
+            }
+
+            if self
+                .last_tracking_command_at
+                .is_some_and(|last| last.elapsed() < TRACKING_COMMAND_INTERVAL)
+            {
+                return;
+            }
+
+            let pan_delta = error_x * TRACKING_ABSOLUTE_PAN_GAIN_DEG;
+            let tilt_delta = -error_y * TRACKING_ABSOLUTE_TILT_GAIN_DEG;
+
+            match self.ptz.track_absolute_offset(pan_delta, tilt_delta) {
+                Ok(true) => {
+                    self.tracking_pan_speed = 0;
+                    self.tracking_tilt_speed = 0;
+                    self.last_tracking_command_at = Some(Instant::now());
+                    self.ptz_error = None;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    self.ptz_error = Some(error);
+                }
+            }
+
+            return;
+        }
 
         let pan_speed = Self::tracking_speed(error_x, TRACKING_DEADZONE_X);
         let tilt_speed = -Self::tracking_speed(error_y, TRACKING_DEADZONE_Y);
