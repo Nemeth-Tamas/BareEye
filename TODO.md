@@ -34,7 +34,7 @@
 * [x] Add person detection
 * [x] Add face detection
 * [x] Draw interactive detection boxes over the live image
-* [ ] Maintain stable identities between frames
+* [x] Maintain stable identities between frames
 * [ ] Add short-term target re-identification after occlusion
 * [x] Keep the vision pipeline real-time by dropping stale frames
 
