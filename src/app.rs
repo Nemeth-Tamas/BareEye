@@ -1,5 +1,6 @@
 use crate::camera::ptz::ManualController;
 use crate::camera::{PreviewInfo, StreamTelemetry};
+use crate::tracking::{SelectedTarget, TrackingState};
 use crate::vision::{Detection, DetectionKind, VisionInput, VisionWorker};
 use eframe::egui;
 use std::collections::VecDeque;
@@ -104,77 +105,6 @@ impl ManualPtzStep {
 
     fn drag_scale(self) -> f32 {
         self.degrees() / 5.0
-    }
-}
-
-#[derive(Clone)]
-struct SelectedTarget {
-    detection: Detection,
-    visible: bool,
-}
-
-impl SelectedTarget {
-    fn new(detection: Detection) -> Self {
-        Self {
-            detection,
-            visible: true,
-        }
-    }
-
-    fn refresh(&mut self, detections: &[Detection]) {
-        if let Some(detection) = detections.iter().find(|detection| {
-            detection.kind == self.detection.kind && detection.id == self.detection.id
-        }) {
-            self.detection = detection.clone();
-            self.visible = true;
-            return;
-        }
-
-        let current_x = (self.detection.x1 + self.detection.x2) * 0.5;
-        let current_y = (self.detection.y1 + self.detection.y2) * 0.5;
-
-        let current_width = self.detection.x2 - self.detection.x1;
-        let current_height = self.detection.y2 - self.detection.y1;
-
-        let maximum_distance = match self.detection.kind {
-            DetectionKind::Face => current_width
-                .hypot(current_height)
-                .mul_add(0.45, 0.0)
-                .max(60.0),
-            DetectionKind::Person => current_width
-                .hypot(current_height)
-                .mul_add(0.75, 0.0)
-                .max(80.0),
-        };
-
-        let mut best: Option<(&Detection, f32)> = None;
-
-        for detection in detections
-            .iter()
-            .filter(|detection| detection.kind == self.detection.kind)
-        {
-            let center_x = (detection.x1 + detection.x2) * 0.5;
-            let center_y = (detection.y1 + detection.y2) * 0.5;
-
-            let distance = (center_x - current_x).hypot(center_y - current_y);
-
-            if best
-                .as_ref()
-                .is_none_or(|(_, best_distance)| distance < *best_distance)
-            {
-                best = Some((detection, distance));
-            }
-        }
-
-        if let Some((detection, distance)) = best
-            && distance <= maximum_distance
-        {
-            self.detection = detection.clone();
-            self.visible = true;
-            return;
-        }
-
-        self.visible = false;
     }
 }
 
@@ -1000,7 +930,7 @@ impl eframe::App for BareEyeApp {
         let vision = self.vision.snapshot();
 
         if let Some(target) = self.selected_target.as_mut() {
-            target.refresh(&vision.detections);
+            target.refresh(&vision.detections, self.tracking_enabled);
         }
 
         if self.selected_target.is_none() {
@@ -1072,23 +1002,32 @@ impl eframe::App for BareEyeApp {
                 if let Some(target) = &self.selected_target {
                     ui.separator();
 
-                    if target.visible {
-                        if self.tracking_enabled {
-                            ui.strong(format!(
-                                "FOLLOWING: {}",
-                                target.detection.kind.label()
-                            ));
-                        } else {
-                            ui.strong(format!(
-                                "LOCKED: {}",
-                                target.detection.kind.label()
-                            ));
+                    let status = format!(
+                        "{}: {} #{}",
+                        target.state().label(),
+                        target.detection.kind.label(),
+                        target.detection.id
+                    );
+
+                    match target.state() {
+                        TrackingState::Lost => {
+                            ui.colored_label(egui::Color32::RED, status);
                         }
-                    } else {
-                        ui.strong(format!(
-                            "SEARCHING: {}",
-                            target.detection.kind.label()
-                        ));
+                        TrackingState::Reacquired => {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(120, 255, 120),
+                                status,
+                            );
+                        }
+                        TrackingState::Searching => {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(255, 200, 80),
+                                status,
+                            );
+                        }
+                        TrackingState::Locked | TrackingState::Following => {
+                            ui.strong(status);
+                        }
                     }
                 }
 

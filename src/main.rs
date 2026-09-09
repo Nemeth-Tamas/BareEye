@@ -1,5 +1,6 @@
 mod app;
 mod camera;
+mod tracking;
 mod vision;
 
 use std::error::Error;
