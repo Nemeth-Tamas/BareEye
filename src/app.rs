@@ -32,6 +32,10 @@ const TRACKING_ABSOLUTE_PAN_GAIN_DEG: f32 = 65.0;
 const TRACKING_ABSOLUTE_TILT_GAIN_DEG: f32 = 40.0;
 const TRACKING_ABSOLUTE_SETTLE_TIME: Duration = Duration::from_millis(400);
 
+const TRACKING_PREDICTION_HORIZON: Duration = Duration::from_millis(120);
+const TRACKING_MAX_PREDICTION_LEAD_X_PX: f32 = 80.0;
+const TRACKING_MAX_PREDICTION_LEAD_Y_PX: f32 = 50.0;
+
 pub fn run(
     camera: cameras::Camera,
     info: PreviewInfo,
@@ -692,10 +696,20 @@ impl BareEyeApp {
             .as_ref()
             .filter(|target| target.visible)
             .map(|target| {
-                (
-                    (target.detection.x1 + target.detection.x2) * 0.5,
-                    (target.detection.y1 + target.detection.y2) * 0.5,
-                )
+                let center = target.center();
+                let predicted = target.predicted_center(TRACKING_PREDICTION_HORIZON);
+
+                let lead_x = (predicted.0 - center.0).clamp(
+                    -TRACKING_MAX_PREDICTION_LEAD_X_PX,
+                    TRACKING_MAX_PREDICTION_LEAD_X_PX,
+                );
+
+                let lead_y = (predicted.1 - center.1).clamp(
+                    -TRACKING_MAX_PREDICTION_LEAD_Y_PX,
+                    TRACKING_MAX_PREDICTION_LEAD_Y_PX,
+                );
+
+                (center.0 + lead_x, center.1 + lead_y)
             });
 
         let Some((center_x, center_y)) = target_center else {
@@ -1076,6 +1090,27 @@ impl eframe::App for BareEyeApp {
                         vision.replaced_frames
                     ));
                 });
+
+                if let Some(target) = &self.selected_target {
+                    let velocity = target.motion_velocity();
+                    let center = target.center();
+                    let predicted = target.predicted_center(TRACKING_PREDICTION_HORIZON);
+
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "Target motion: X {:+.0} px/s  Y {:+.0} px/s",
+                            velocity.0, velocity.1
+                        ));
+
+                        ui.separator();
+
+                        ui.label(format!(
+                            "Prediction lead: X {:+.0} px  Y {:+.0} px",
+                            predicted.0 - center.0,
+                            predicted.1 - center.1
+                        ));
+                    });
+                }
 
                 ui.horizontal(|ui| {
                     ui.label(format!(

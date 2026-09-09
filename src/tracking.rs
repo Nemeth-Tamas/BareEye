@@ -4,6 +4,10 @@ use std::time::{Duration, Instant};
 const TARGET_LOST_TIMEOUT: Duration = Duration::from_millis(750);
 const REACQUIRED_DISPLAY_TIME: Duration = Duration::from_millis(750);
 
+const MOTION_MIN_SAMPLE_TIME: Duration = Duration::from_millis(5);
+const MOTION_STALE_AFTER: Duration = Duration::from_millis(500);
+const MOTION_SMOOTHING_ALPHA: f32 = 0.35;
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum TrackingState {
     Locked,
@@ -32,21 +36,72 @@ pub struct SelectedTarget {
     state: TrackingState,
     missing_since: Option<Instant>,
     reacquired_at: Option<Instant>,
+    last_motion_center: Option<(f32, f32)>,
+    last_motion_at: Option<Instant>,
+    motion_velocity_x: f32,
+    motion_velocity_y: f32,
+    motion_samples: u32,
 }
 
 impl SelectedTarget {
     pub fn new(detection: Detection) -> Self {
+        Self::new_at(detection, Instant::now())
+    }
+
+    fn new_at(detection: Detection, now: Instant) -> Self {
+        let center = detection_center(&detection);
+
         Self {
             detection,
             visible: true,
             state: TrackingState::Locked,
             missing_since: None,
             reacquired_at: None,
+            last_motion_center: Some(center),
+            last_motion_at: Some(now),
+            motion_velocity_x: 0.0,
+            motion_velocity_y: 0.0,
+            motion_samples: 0,
         }
     }
 
     pub fn state(&self) -> TrackingState {
         self.state
+    }
+
+    pub fn center(&self) -> (f32, f32) {
+        detection_center(&self.detection)
+    }
+
+    pub fn motion_velocity(&self) -> (f32, f32) {
+        (self.motion_velocity_x, self.motion_velocity_y)
+    }
+
+    pub fn predicted_center(&self, horizon: Duration) -> (f32, f32) {
+        self.predicted_center_at(horizon, Instant::now())
+    }
+
+    fn predicted_center_at(&self, horizon: Duration, now: Instant) -> (f32, f32) {
+        let center = self.center();
+
+        if !self.visible || self.motion_samples == 0 {
+            return center;
+        }
+
+        let Some(last_motion_at) = self.last_motion_at else {
+            return center;
+        };
+
+        if now.saturating_duration_since(last_motion_at) > MOTION_STALE_AFTER {
+            return center;
+        }
+
+        let seconds = horizon.as_secs_f32();
+
+        (
+            center.0 + self.motion_velocity_x * seconds,
+            center.1 + self.motion_velocity_y * seconds,
+        )
     }
 
     pub fn refresh(&mut self, detections: &[Detection], tracking_enabled: bool) {
@@ -56,6 +111,12 @@ impl SelectedTarget {
     fn refresh_at(&mut self, detections: &[Detection], tracking_enabled: bool, now: Instant) {
         if let Some(detection) = self.matching_detection(detections) {
             let was_visible = self.visible;
+
+            if was_visible {
+                self.observe_motion(&detection, now);
+            } else {
+                self.reset_motion(&detection, now);
+            }
 
             self.detection = detection;
             self.visible = true;
@@ -100,6 +161,59 @@ impl SelectedTarget {
         } else {
             TrackingState::Searching
         };
+    }
+
+    fn observe_motion(&mut self, detection: &Detection, now: Instant) {
+        if !detection_geometry_changed(&self.detection, detection) {
+            return;
+        }
+
+        let center = detection_center(detection);
+
+        let (Some(previous_center), Some(previous_at)) =
+            (self.last_motion_center, self.last_motion_at)
+        else {
+            self.reset_motion(detection, now);
+            return;
+        };
+
+        let elapsed = now.saturating_duration_since(previous_at);
+
+        if elapsed < MOTION_MIN_SAMPLE_TIME {
+            return;
+        }
+
+        if elapsed > MOTION_STALE_AFTER {
+            self.reset_motion(detection, now);
+            return;
+        }
+
+        let seconds = elapsed.as_secs_f32();
+        let instant_velocity_x = (center.0 - previous_center.0) / seconds;
+        let instant_velocity_y = (center.1 - previous_center.1) / seconds;
+
+        if self.motion_samples == 0 {
+            self.motion_velocity_x = instant_velocity_x;
+            self.motion_velocity_y = instant_velocity_y;
+        } else {
+            self.motion_velocity_x +=
+                (instant_velocity_x - self.motion_velocity_x) * MOTION_SMOOTHING_ALPHA;
+
+            self.motion_velocity_y +=
+                (instant_velocity_y - self.motion_velocity_y) * MOTION_SMOOTHING_ALPHA;
+        }
+
+        self.motion_samples = self.motion_samples.saturating_add(1);
+        self.last_motion_center = Some(center);
+        self.last_motion_at = Some(now);
+    }
+
+    fn reset_motion(&mut self, detection: &Detection, now: Instant) {
+        self.last_motion_center = Some(detection_center(detection));
+        self.last_motion_at = Some(now);
+        self.motion_velocity_x = 0.0;
+        self.motion_velocity_y = 0.0;
+        self.motion_samples = 0;
     }
 
     fn matching_detection(&self, detections: &[Detection]) -> Option<Detection> {
@@ -149,6 +263,20 @@ impl SelectedTarget {
             (distance <= maximum_distance).then(|| detection.clone())
         })
     }
+}
+
+fn detection_center(detection: &Detection) -> (f32, f32) {
+    (
+        (detection.x1 + detection.x2) * 0.5,
+        (detection.y1 + detection.y2) * 0.5,
+    )
+}
+
+fn detection_geometry_changed(left: &Detection, right: &Detection) -> bool {
+    (left.x1 - right.x1).abs() > f32::EPSILON
+        || (left.y1 - right.y1).abs() > f32::EPSILON
+        || (left.x2 - right.x2).abs() > f32::EPSILON
+        || (left.y2 - right.y2).abs() > f32::EPSILON
 }
 
 #[cfg(test)]
@@ -207,7 +335,7 @@ mod tests {
     fn reacquired_target_returns_to_locked_when_follow_is_disabled() {
         let start = Instant::now();
         let detection = face(7, 200.0, 150.0);
-        let mut target = SelectedTarget::new(detection.clone());
+        let mut target = SelectedTarget::new_at(detection.clone(), start);
 
         target.refresh_at(&[], false, start);
         assert_eq!(target.state(), TrackingState::Searching);
@@ -223,5 +351,88 @@ mod tests {
             reacquired_at + REACQUIRED_DISPLAY_TIME + Duration::from_millis(1),
         );
         assert_eq!(target.state(), TrackingState::Locked);
+    }
+
+    #[test]
+    fn moving_target_builds_velocity_and_predicts_ahead() {
+        let start = Instant::now();
+        let initial = face(11, 100.0, 100.0);
+        let mut target = SelectedTarget::new_at(initial, start);
+
+        let moved = face(11, 120.0, 100.0);
+
+        target.refresh_at(
+            std::slice::from_ref(&moved),
+            true,
+            start + Duration::from_millis(100),
+        );
+
+        let (velocity_x, velocity_y) = target.motion_velocity();
+
+        assert!((velocity_x - 200.0).abs() < 0.01);
+        assert!(velocity_y.abs() < 0.01);
+
+        let center = target.center();
+        let predicted = target.predicted_center_at(
+            Duration::from_millis(100),
+            start + Duration::from_millis(100),
+        );
+
+        assert!((predicted.0 - (center.0 + 20.0)).abs() < 0.01);
+        assert!((predicted.1 - center.1).abs() < 0.01);
+    }
+
+    #[test]
+    fn stale_motion_is_not_used_for_prediction() {
+        let start = Instant::now();
+        let initial = face(12, 100.0, 100.0);
+        let mut target = SelectedTarget::new_at(initial, start);
+
+        let moved = face(12, 120.0, 100.0);
+
+        target.refresh_at(
+            std::slice::from_ref(&moved),
+            true,
+            start + Duration::from_millis(100),
+        );
+
+        let center = target.center();
+
+        let predicted = target.predicted_center_at(
+            Duration::from_millis(100),
+            start + MOTION_STALE_AFTER + Duration::from_millis(101),
+        );
+
+        assert_eq!(predicted, center);
+    }
+
+    #[test]
+    fn reacquisition_resets_stale_motion() {
+        let start = Instant::now();
+        let initial = face(13, 100.0, 100.0);
+        let mut target = SelectedTarget::new_at(initial, start);
+
+        let moved = face(13, 120.0, 100.0);
+
+        target.refresh_at(
+            std::slice::from_ref(&moved),
+            true,
+            start + Duration::from_millis(100),
+        );
+
+        assert!(target.motion_velocity().0 > 0.0);
+
+        target.refresh_at(&[], true, start + Duration::from_millis(200));
+
+        let reacquired = face(13, 130.0, 100.0);
+
+        target.refresh_at(
+            std::slice::from_ref(&reacquired),
+            true,
+            start + Duration::from_millis(300),
+        );
+
+        assert_eq!(target.motion_velocity(), (0.0, 0.0));
+        assert_eq!(target.state(), TrackingState::Reacquired);
     }
 }

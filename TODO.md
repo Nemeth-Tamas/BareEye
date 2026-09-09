@@ -85,7 +85,7 @@
 
 ## 8. Tracking robustness
 
-* [ ] Handle temporary occlusion
+* [x] Handle temporary occlusion
 * [ ] Handle multiple nearby people
 * [ ] Reduce identity switching
 * [ ] Handle people entering and leaving the frame
