@@ -1,7 +1,7 @@
 use crate::vision::{Detection, DetectionKind};
 use std::time::{Duration, Instant};
 
-const TARGET_LOST_TIMEOUT: Duration = Duration::from_secs(2);
+const TARGET_LOST_TIMEOUT: Duration = Duration::from_millis(750);
 const REACQUIRED_DISPLAY_TIME: Duration = Duration::from_millis(750);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

@@ -35,7 +35,7 @@
 * [x] Add face detection
 * [x] Draw interactive detection boxes over the live image
 * [x] Maintain stable identities between frames
-* [ ] Add short-term target re-identification after occlusion
+* [x] Add short-term target re-identification after occlusion
 * [x] Keep the vision pipeline real-time by dropping stale frames
 
 ## 4. Target selection
@@ -45,7 +45,7 @@
 * [ ] Add manual drag-to-select tracking for arbitrary objects
 * [ ] Store target appearance and motion state
 * [x] Recover a selected target after brief loss
-* [ ] Clearly display locked, searching, lost, and reacquired states
+* [x] Clearly display locked, searching, lost, and reacquired states
 
 ## 5. PTZ tracking controller
 
@@ -106,7 +106,7 @@
 
 ## 10. Validation
 
-* [ ] Add unit tests for tracking-state transitions
+* [x] Add unit tests for tracking-state transitions
 * [ ] Add unit tests for framing calculations
 * [ ] Add unit tests for PTZ limit logic
 * [ ] Add unit tests for wraparound prediction

@@ -5,7 +5,7 @@ use ort::value::Tensor;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const MODEL_WIDTH: usize = 640;
 const MODEL_HEIGHT: usize = 640;
@@ -14,7 +14,7 @@ const PERSON_CONFIDENCE_THRESHOLD: f32 = 0.25;
 const FACE_CONFIDENCE_THRESHOLD: f32 = 0.25;
 const LETTERBOX_VALUE: f32 = 114.0 / 255.0;
 
-const IDENTITY_MAX_MISSED_FRAMES: u32 = 12;
+const IDENTITY_RETENTION: Duration = Duration::from_secs(3);
 const IDENTITY_MIN_IOU: f32 = 0.05;
 
 enum VisionSignal {
@@ -52,7 +52,7 @@ pub struct Detection {
 struct IdentityTrack {
     id: u64,
     detection: Detection,
-    missed_frames: u32,
+    last_seen: Instant,
 }
 
 struct IdentityTracker {
@@ -69,6 +69,13 @@ impl IdentityTracker {
     }
 
     fn assign(&mut self, detections: &mut [Detection]) {
+        self.assign_at(detections, Instant::now());
+    }
+
+    fn assign_at(&mut self, detections: &mut [Detection], now: Instant) {
+        self.tracks
+            .retain(|track| now.saturating_duration_since(track.last_seen) <= IDENTITY_RETENTION);
+
         let mut candidates = Vec::new();
 
         for (track_index, track) in self.tracks.iter().enumerate() {
@@ -120,16 +127,10 @@ impl IdentityTracker {
             detections[detection_index].id = id;
 
             self.tracks[track_index].detection = detections[detection_index].clone();
-            self.tracks[track_index].missed_frames = 0;
+            self.tracks[track_index].last_seen = now;
 
             track_used[track_index] = true;
             detection_used[detection_index] = true;
-        }
-
-        for (track_index, track) in self.tracks.iter_mut().enumerate() {
-            if !track_used[track_index] {
-                track.missed_frames += 1;
-            }
         }
 
         for detection_index in 0..detections.len() {
@@ -145,12 +146,9 @@ impl IdentityTracker {
             self.tracks.push(IdentityTrack {
                 id,
                 detection: detections[detection_index].clone(),
-                missed_frames: 0,
+                last_seen: now,
             });
         }
-
-        self.tracks
-            .retain(|track| track.missed_frames <= IDENTITY_MAX_MISSED_FRAMES);
     }
 }
 
@@ -628,4 +626,59 @@ fn set_error(shared: &Arc<Shared>, error: String) {
         .unwrap_or_else(PoisonError::into_inner);
 
     snapshot.last_error = Some(error);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn face(x: f32, y: f32) -> Detection {
+        Detection {
+            kind: DetectionKind::Face,
+            x1: x,
+            y1: y,
+            x2: x + 100.0,
+            y2: y + 100.0,
+            confidence: 0.9,
+            id: 0,
+        }
+    }
+
+    #[test]
+    fn identity_survives_short_occlusion_by_elapsed_time() {
+        let start = Instant::now();
+        let mut tracker = IdentityTracker::new();
+
+        let mut first = vec![face(100.0, 100.0)];
+        tracker.assign_at(&mut first, start);
+
+        let original_id = first[0].id;
+
+        let mut reacquired = vec![face(105.0, 102.0)];
+        tracker.assign_at(
+            &mut reacquired,
+            start + IDENTITY_RETENTION - Duration::from_millis(1),
+        );
+
+        assert_eq!(reacquired[0].id, original_id);
+    }
+
+    #[test]
+    fn identity_expires_after_retention_window() {
+        let start = Instant::now();
+        let mut tracker = IdentityTracker::new();
+
+        let mut first = vec![face(100.0, 100.0)];
+        tracker.assign_at(&mut first, start);
+
+        let original_id = first[0].id;
+
+        let mut reacquired = vec![face(100.0, 100.0)];
+        tracker.assign_at(
+            &mut reacquired,
+            start + IDENTITY_RETENTION + Duration::from_millis(1),
+        );
+
+        assert_ne!(reacquired[0].id, original_id);
+    }
 }
