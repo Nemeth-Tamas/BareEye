@@ -660,10 +660,6 @@ impl BareEyeApp {
             return;
         }
 
-        if pan_speed == self.tracking_pan_speed && tilt_speed == self.tracking_tilt_speed {
-            return;
-        }
-
         if pan_speed == 0 && tilt_speed == 0 {
             self.stop_tracking_motion();
             return;

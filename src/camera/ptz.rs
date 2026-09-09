@@ -8,6 +8,91 @@ use std::time::{Duration, Instant};
 const MOVE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MOVE_TIMEOUT: Duration = Duration::from_secs(5);
 
+const TRACKING_PWM_TICK: Duration = Duration::from_millis(20);
+const TRACKING_PWM_PERIOD: Duration = Duration::from_millis(300);
+const TRACKING_PWM_ON_TIME: Duration = Duration::from_millis(200);
+const TRACKING_PWM_WATCHDOG: Duration = Duration::from_millis(500);
+
+struct TrackingPwm {
+    pan: i32,
+    tilt: i32,
+    cycle_started: Instant,
+    last_refresh: Instant,
+    output_pan: i32,
+    output_tilt: i32,
+}
+
+impl TrackingPwm {
+    fn new() -> Self {
+        let now = Instant::now();
+
+        Self {
+            pan: 0,
+            tilt: 0,
+            cycle_started: now,
+            last_refresh: now,
+            output_pan: 0,
+            output_tilt: 0,
+        }
+    }
+
+    fn set_command(&mut self, pan: i32, tilt: i32) {
+        let pan = pan.signum();
+        let tilt = tilt.signum();
+        let now = Instant::now();
+
+        if self.pan != pan || self.tilt != tilt {
+            self.cycle_started = now;
+        }
+
+        self.pan = pan;
+        self.tilt = tilt;
+        self.last_refresh = now;
+    }
+
+    fn clear(&mut self) {
+        let now = Instant::now();
+
+        self.pan = 0;
+        self.tilt = 0;
+        self.cycle_started = now;
+        self.last_refresh = now;
+    }
+
+    fn next_output(&mut self, now: Instant) -> Option<(i32, i32)> {
+        if now.duration_since(self.last_refresh) >= TRACKING_PWM_WATCHDOG {
+            self.pan = 0;
+            self.tilt = 0;
+        }
+
+        let output = if self.pan == 0 && self.tilt == 0 {
+            (0, 0)
+        } else {
+            let mut elapsed = now.duration_since(self.cycle_started);
+
+            if elapsed >= TRACKING_PWM_PERIOD {
+                self.cycle_started = now;
+                elapsed = Duration::ZERO;
+            }
+
+            if elapsed < TRACKING_PWM_ON_TIME {
+                (self.pan, self.tilt)
+            } else {
+                (0, 0)
+            }
+        };
+
+        if output == (self.output_pan, self.output_tilt) {
+            return None;
+        }
+
+        self.output_pan = output.0;
+        self.output_tilt = output.1;
+
+        Some(output)
+    }
+}
+
 #[derive(Copy, Clone)]
 enum Axis {
     Pan,
@@ -43,6 +128,29 @@ struct WorkerState {
     target_zoom: f32,
     last_error: Option<String>,
     last_operation_ms: f32,
+}
+
+fn apply_tracking_output(
+    relative_ptz: &mut Option<Result<crate::camera::relative_ptz::RelativePtzController, String>>,
+    device: &Device,
+    pan: i32,
+    tilt: i32,
+) -> Result<(), String> {
+    if pan == 0 && tilt == 0 {
+        return match relative_ptz.as_ref() {
+            Some(Ok(controller)) => controller.stop(),
+            Some(Err(error)) => Err(error.clone()),
+            None => Ok(()),
+        };
+    }
+
+    let controller = relative_ptz
+        .get_or_insert_with(|| crate::camera::relative_ptz::RelativePtzController::open(device));
+
+    match controller {
+        Ok(controller) => controller.set_speed(pan, tilt),
+        Err(error) => Err(error.clone()),
+    }
 }
 
 fn wait_for_worker_targets(
@@ -158,214 +266,224 @@ impl ManualController {
             .name("bareeye-ptz".to_owned())
             .spawn(move || {
                 let mut relative_ptz = None;
+                let mut tracking_pwm = TrackingPwm::new();
 
-                while let Ok(command) = receiver.recv() {
-                    match command {
-                        WorkerCommand::Apply(controls) => {
-                            let pan_target = controls.pan;
-                            let tilt_target = controls.tilt;
-                            let zoom_target = controls.zoom;
+                loop {
+                    let command = match receiver.recv_timeout(TRACKING_PWM_TICK) {
+                        Ok(command) => Some(command),
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
 
-                            let started = Instant::now();
-                            let apply_result = cameras::apply_controls(&device, &controls);
+                    if let Some(command) = command {
+                        match command {
+                            WorkerCommand::Apply(controls) => {
+                                tracking_pwm.clear();
+                                let _ = apply_tracking_output(&mut relative_ptz, &device, 0, 0);
 
-                            if apply_result.is_ok() {
+                                let pan_target = controls.pan;
+                                let tilt_target = controls.tilt;
+                                let zoom_target = controls.zoom;
+
+                                let started = Instant::now();
+                                let apply_result = cameras::apply_controls(&device, &controls);
+
+                                if apply_result.is_ok() {
+                                    let mut state = worker_state
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                                    if let Some(value) = pan_target {
+                                        state.target_pan = value;
+                                    }
+
+                                    if let Some(value) = tilt_target {
+                                        state.target_tilt = value;
+                                    }
+
+                                    if let Some(value) = zoom_target {
+                                        state.target_zoom = value;
+                                    }
+                                }
+
+                                let result = match apply_result {
+                                    Ok(()) => wait_for_worker_targets(
+                                        &device,
+                                        &worker_capabilities,
+                                        &worker_state,
+                                        pan_target,
+                                        tilt_target,
+                                        zoom_target,
+                                    ),
+                                    Err(error) => Err(error.to_string()),
+                                };
+
                                 let mut state = worker_state
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-                                if let Some(value) = pan_target {
-                                    state.target_pan = value;
-                                }
+                                state.last_operation_ms = started.elapsed().as_secs_f32() * 1000.0;
 
-                                if let Some(value) = tilt_target {
-                                    state.target_tilt = value;
-                                }
-
-                                if let Some(value) = zoom_target {
-                                    state.target_zoom = value;
-                                }
+                                state.last_error = result.err();
                             }
+                            WorkerCommand::Relative(axis, amount) => {
+                                tracking_pwm.clear();
+                                let _ = apply_tracking_output(&mut relative_ptz, &device, 0, 0);
 
-                            let result = match apply_result {
-                                Ok(()) => wait_for_worker_targets(
-                                    &device,
-                                    &worker_capabilities,
-                                    &worker_state,
-                                    pan_target,
-                                    tilt_target,
-                                    zoom_target,
-                                ),
-                                Err(error) => Err(error.to_string()),
-                            };
+                                let started = Instant::now();
 
-                            let mut state = worker_state
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                let result = (|| -> Result<(), String> {
+                                    let current = cameras::read_controls(&device)
+                                        .map_err(|error| error.to_string())?;
 
-                            state.last_operation_ms = started.elapsed().as_secs_f32() * 1000.0;
+                                    {
+                                        let mut state = worker_state
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-                            state.last_error = result.err();
-                        }
-                        WorkerCommand::Relative(axis, amount) => {
-                            let started = Instant::now();
+                                        state.actual_pan = current.pan;
+                                        state.actual_tilt = current.tilt;
+                                        state.actual_zoom = current.zoom;
+                                    }
 
-                            let result = (|| -> Result<(), String> {
-                                let current = cameras::read_controls(&device)
-                                    .map_err(|error| error.to_string())?;
+                                    let Some(range) = range_for_axis(&worker_capabilities, axis)
+                                    else {
+                                        return Err(format!(
+                                            "{} is not supported by this camera.",
+                                            axis.label()
+                                        ));
+                                    };
 
-                                {
-                                    let mut state = worker_state
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    let current_value = match axis {
+                                        Axis::Pan => current.pan,
+                                        Axis::Tilt => current.tilt,
+                                        Axis::Zoom => current.zoom,
+                                    }
+                                    .unwrap_or(range.default);
 
-                                    state.actual_pan = current.pan;
-                                    state.actual_tilt = current.tilt;
-                                    state.actual_zoom = current.zoom;
-                                }
+                                    let target = snap_to_step(
+                                        (current_value + amount).clamp(range.min, range.max),
+                                        range,
+                                    );
 
-                                let Some(range) = range_for_axis(&worker_capabilities, axis) else {
-                                    return Err(format!(
-                                        "{} is not supported by this camera.",
-                                        axis.label()
-                                    ));
-                                };
+                                    let controls = match axis {
+                                        Axis::Pan => Controls {
+                                            pan: Some(target),
+                                            ..Default::default()
+                                        },
+                                        Axis::Tilt => Controls {
+                                            tilt: Some(target),
+                                            ..Default::default()
+                                        },
+                                        Axis::Zoom => Controls {
+                                            zoom: Some(target),
+                                            ..Default::default()
+                                        },
+                                    };
 
-                                let current_value = match axis {
-                                    Axis::Pan => current.pan,
-                                    Axis::Tilt => current.tilt,
-                                    Axis::Zoom => current.zoom,
-                                }
-                                .unwrap_or(range.default);
+                                    cameras::apply_controls(&device, &controls)
+                                        .map_err(|error| error.to_string())?;
 
-                                let target = snap_to_step(
-                                    (current_value + amount).clamp(range.min, range.max),
-                                    range,
-                                );
+                                    {
+                                        let mut state = worker_state
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-                                let controls = match axis {
-                                    Axis::Pan => Controls {
-                                        pan: Some(target),
-                                        ..Default::default()
-                                    },
-                                    Axis::Tilt => Controls {
-                                        tilt: Some(target),
-                                        ..Default::default()
-                                    },
-                                    Axis::Zoom => Controls {
-                                        zoom: Some(target),
-                                        ..Default::default()
-                                    },
-                                };
+                                        match axis {
+                                            Axis::Pan => state.target_pan = target,
+                                            Axis::Tilt => state.target_tilt = target,
+                                            Axis::Zoom => state.target_zoom = target,
+                                        }
+                                    }
 
-                                cameras::apply_controls(&device, &controls)
-                                    .map_err(|error| error.to_string())?;
+                                    let (pan_target, tilt_target, zoom_target) = match axis {
+                                        Axis::Pan => (Some(target), None, None),
+                                        Axis::Tilt => (None, Some(target), None),
+                                        Axis::Zoom => (None, None, Some(target)),
+                                    };
 
-                                {
-                                    let mut state = worker_state
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    wait_for_worker_targets(
+                                        &device,
+                                        &worker_capabilities,
+                                        &worker_state,
+                                        pan_target,
+                                        tilt_target,
+                                        zoom_target,
+                                    )
+                                })();
 
-                                    match axis {
-                                        Axis::Pan => state.target_pan = target,
-                                        Axis::Tilt => state.target_tilt = target,
-                                        Axis::Zoom => state.target_zoom = target,
+                                let mut state = worker_state
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                                state.last_operation_ms = started.elapsed().as_secs_f32() * 1000.0;
+
+                                state.last_error = result.err();
+                            }
+                            WorkerCommand::TrackVelocity { pan, tilt } => {
+                                tracking_pwm.set_command(pan, tilt);
+
+                                worker_tracking_pending.store(false, Ordering::Release);
+                            }
+                            WorkerCommand::StopTracking => {
+                                tracking_pwm.clear();
+
+                                let started = Instant::now();
+                                let result =
+                                    apply_tracking_output(&mut relative_ptz, &device, 0, 0);
+
+                                let mut state = worker_state
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                                state.last_operation_ms = started.elapsed().as_secs_f32() * 1000.0;
+                                state.last_error = result.err();
+
+                                worker_tracking_pending.store(false, Ordering::Release);
+                            }
+                            WorkerCommand::ReadPosition => {
+                                let started = Instant::now();
+                                let result = cameras::read_controls(&device);
+                                let elapsed_ms = started.elapsed().as_secs_f32() * 1000.0;
+
+                                let mut state = worker_state
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                                state.last_operation_ms = elapsed_ms;
+
+                                match result {
+                                    Ok(controls) => {
+                                        state.actual_pan = controls.pan;
+                                        state.actual_tilt = controls.tilt;
+                                        state.actual_zoom = controls.zoom;
+                                        state.last_error = None;
+                                    }
+                                    Err(error) => {
+                                        state.last_error = Some(error.to_string());
                                     }
                                 }
+                            }
+                            WorkerCommand::Shutdown => {
+                                tracking_pwm.clear();
+                                let _ = apply_tracking_output(&mut relative_ptz, &device, 0, 0);
 
-                                let (pan_target, tilt_target, zoom_target) = match axis {
-                                    Axis::Pan => (Some(target), None, None),
-                                    Axis::Tilt => (None, Some(target), None),
-                                    Axis::Zoom => (None, None, Some(target)),
-                                };
-
-                                wait_for_worker_targets(
-                                    &device,
-                                    &worker_capabilities,
-                                    &worker_state,
-                                    pan_target,
-                                    tilt_target,
-                                    zoom_target,
-                                )
-                            })();
-
-                            let mut state = worker_state
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-                            state.last_operation_ms = started.elapsed().as_secs_f32() * 1000.0;
-
-                            state.last_error = result.err();
-                        }
-                        WorkerCommand::TrackVelocity { pan, tilt } => {
-                            let started = Instant::now();
-
-                            let controller = relative_ptz.get_or_insert_with(|| {
-                                crate::camera::relative_ptz::RelativePtzController::open(&device)
-                            });
-
-                            let result = match controller {
-                                Ok(controller) => controller.set_speed(pan, tilt),
-                                Err(error) => Err(error.clone()),
-                            };
-
-                            let mut state = worker_state
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-                            state.last_operation_ms = started.elapsed().as_secs_f32() * 1000.0;
-                            state.last_error = result.err();
-
-                            worker_tracking_pending.store(false, Ordering::Release);
-                        }
-                        WorkerCommand::StopTracking => {
-                            let started = Instant::now();
-
-                            let result = match relative_ptz.as_ref() {
-                                Some(Ok(controller)) => controller.stop(),
-                                Some(Err(error)) => Err(error.clone()),
-                                None => Ok(()),
-                            };
-
-                            let mut state = worker_state
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-                            state.last_operation_ms = started.elapsed().as_secs_f32() * 1000.0;
-                            state.last_error = result.err();
-
-                            worker_tracking_pending.store(false, Ordering::Release);
-                        }
-                        WorkerCommand::ReadPosition => {
-                            let started = Instant::now();
-                            let result = cameras::read_controls(&device);
-                            let elapsed_ms = started.elapsed().as_secs_f32() * 1000.0;
-
-                            let mut state = worker_state
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-                            state.last_operation_ms = elapsed_ms;
-
-                            match result {
-                                Ok(controls) => {
-                                    state.actual_pan = controls.pan;
-                                    state.actual_tilt = controls.tilt;
-                                    state.actual_zoom = controls.zoom;
-                                    state.last_error = None;
-                                }
-                                Err(error) => {
-                                    state.last_error = Some(error.to_string());
-                                }
+                                break;
                             }
                         }
-                        WorkerCommand::Shutdown => {
-                            if let Some(Ok(controller)) = relative_ptz.as_ref() {
-                                let _ = controller.stop();
-                            }
+                    }
 
-                            break;
-                        }
+                    if let Some((pan, tilt)) = tracking_pwm.next_output(Instant::now()) {
+                        let started = Instant::now();
+
+                        let result = apply_tracking_output(&mut relative_ptz, &device, pan, tilt);
+
+                        let mut state = worker_state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                        state.last_operation_ms = started.elapsed().as_secs_f32() * 1000.0;
+                        state.last_error = result.err();
                     }
                 }
             })
