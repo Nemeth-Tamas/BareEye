@@ -11,17 +11,18 @@ const PUBLISHED_TELE_HORIZONTAL_FOV_DEG: f32 = 6.9;
 const PUBLISHED_OPTICAL_ZOOM: f32 = 12.0;
 
 const ZOOM_SAMPLE_FRACTIONS: &[f32] = &[
-    0.00, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00,
+    0.00, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75,
+    0.80, 0.85, 0.90, 0.95, 1.00,
 ];
 
-const ZOOM_SETTLE_TIME: Duration = Duration::from_millis(500);
+const ZOOM_SETTLE_TIME: Duration = Duration::from_millis(1500);
 const ZOOM_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const ZOOM_MOVE_TIMEOUT: Duration = Duration::from_secs(15);
 const FRAME_TIMEOUT: Duration = Duration::from_secs(2);
 
 const COARSE_SCALE_MIN: f32 = 1.0;
-const COARSE_SCALE_MAX: f32 = 14.0;
-const COARSE_SCALE_STEP: f32 = 0.05;
+const COARSE_SCALE_MAX: f32 = 3.0;
+const COARSE_SCALE_STEP: f32 = 0.025;
 const FINE_SCALE_RADIUS: f32 = 0.12;
 const FINE_SCALE_STEP: f32 = 0.005;
 
@@ -100,14 +101,19 @@ fn run_calibration(
     let wide_zoom = snap_to_step(zoom_range.min, zoom_range);
 
     let reported_wide = move_zoom_and_wait(device, zoom_range, wide_zoom)?;
-    let wide_image = capture_image(latest_frame)?;
+    let mut previous_image = capture_image(latest_frame)?;
+    let mut cumulative_magnification = 1.0_f32;
 
     println!();
     println!("Calibration results");
     println!("===================");
-    println!("zoom_value,control_percent,reported_zoom,magnification,hfov_deg,match_score");
+    println!(
+        "zoom_value,control_percent,reported_zoom,step_magnification,magnification,hfov_deg,match_score"
+    );
 
-    println!("{wide_zoom:.0},0.0,{reported_wide:.0},1.000,{WIDE_HORIZONTAL_FOV_DEG:.3},1.00000");
+    println!(
+        "{wide_zoom:.0},0.0,{reported_wide:.0},1.000,1.000,{WIDE_HORIZONTAL_FOV_DEG:.3},1.00000"
+    );
 
     for fraction in ZOOM_SAMPLE_FRACTIONS.iter().copied().skip(1) {
         let requested = zoom_range.min + (zoom_range.max - zoom_range.min) * fraction;
@@ -117,14 +123,18 @@ fn run_calibration(
 
         let image = capture_image(latest_frame)?;
 
-        let (magnification, score) = estimate_magnification(&wide_image, &image);
+        let (step_magnification, score) = estimate_magnification(&previous_image, &image);
 
-        let hfov = horizontal_fov_for_magnification(magnification);
+        cumulative_magnification *= step_magnification;
+
+        let hfov = horizontal_fov_for_magnification(cumulative_magnification);
 
         println!(
-            "{target:.0},{:.1},{reported:.0},{magnification:.3},{hfov:.3},{score:.5}",
+            "{target:.0},{:.1},{reported:.0},{step_magnification:.3},{cumulative_magnification:.3},{hfov:.3},{score:.5}",
             fraction * 100.0
         );
+
+        previous_image = image;
     }
 
     println!();

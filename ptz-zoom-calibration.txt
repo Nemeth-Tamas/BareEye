@@ -1,0 +1,47 @@
+   Compiling bareeye v0.1.0 (C:\Users\User\Desktop\randomprojectsillneverfinish\BareEye)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.11s
+     Running `target\debug\bareeye.exe --ptz-zoom-calibrate`
+
+Video devices found: 1
+
+[0] Polycom EagleEye IV USB Camera
+    Device ID: \\?\usb#vid_095d&pid_9204&mi_00#b&1da1f946&0&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\global
+
+Searching for an EagleEye candidate...
+
+BareEye optical zoom / FOV calibration
+======================================
+Device: Polycom EagleEye IV USB Camera
+Zoom control range: 0 .. 5680, step 1, default 0
+Published EagleEye IV USB optical range: 12.0x, 6.9┬░ .. 72.5┬░ HFOV
+Original zoom value: 0
+
+Opening BareEye preview
+-----------------------
+Requested: 1920x1080 @ 30 FPS, MJPEG
+Selected:  1920x1080 @ 30 FPS, Mjpeg
+
+Moving to maximum wide angle...
+
+Calibration results
+===================
+zoom_value,control_percent,reported_zoom,magnification,hfov_deg,match_score
+0,0.0,0,1.000,72.500,1.00000
+284,5.0,284,1.070,68.843,0.98556
+568,10.0,568,1.145,65.269,0.98714
+1136,20.0,1136,1.140,65.497,0.98606
+1704,30.0,1704,1.335,57.554,0.97551
+2272,40.0,2272,1.670,47.409,0.96101
+2840,50.0,2840,2.030,39.719,0.94847
+3408,60.0,3408,2.185,37.101,0.78257
+3976,70.0,3976,3.610,22.962,0.65069
+4544,80.0,4544,12.875,6.519,0.65204
+5112,90.0,5112,14.000,5.996,0.60193
+5680,100.0,5680,14.000,5.996,0.48868
+
+Published endpoint sanity check:
+  expected maximum optical zoom: about 12.0x
+  expected maximum-zoom HFOV: about 6.9┬░
+
+Restoring original zoom...
+Camera restored to zoom=0
