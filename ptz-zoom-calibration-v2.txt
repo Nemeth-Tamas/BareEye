@@ -1,0 +1,56 @@
+   Compiling bareeye v0.1.0 (C:\Users\User\Desktop\randomprojectsillneverfinish\BareEye)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.06s
+     Running `target\debug\bareeye.exe --ptz-zoom-calibrate`
+
+Video devices found: 1
+
+[0] Polycom EagleEye IV USB Camera
+    Device ID: \\?\usb#vid_095d&pid_9204&mi_00#b&1da1f946&0&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\global
+
+Searching for an EagleEye candidate...
+
+BareEye optical zoom / FOV calibration
+======================================
+Device: Polycom EagleEye IV USB Camera
+Zoom control range: 0 .. 5680, step 1, default 0
+Published EagleEye IV USB optical range: 12.0x, 6.9┬░ .. 72.5┬░ HFOV
+Original zoom value: 1
+
+Opening BareEye preview
+-----------------------
+Requested: 1920x1080 @ 30 FPS, MJPEG
+Selected:  1920x1080 @ 30 FPS, Mjpeg
+
+Moving to maximum wide angle...
+
+Calibration results
+===================
+zoom_value,control_percent,reported_zoom,step_magnification,magnification,hfov_deg,match_score
+0,0.0,1,1.000,1.000,72.500,1.00000
+284,5.0,284,1.075,1.075,68.594,0.98804
+568,10.0,568,1.075,1.156,64.789,0.98965
+852,15.0,852,1.075,1.242,61.100,0.98551
+1136,20.0,1136,1.085,1.348,57.091,0.95032
+1420,25.0,1420,1.080,1.456,53.468,0.95785
+1704,30.0,1704,1.090,1.587,49.603,0.98711
+1988,35.0,1988,1.090,1.730,45.948,0.98217
+2272,40.0,2272,1.095,1.894,42.329,0.98827
+2556,45.0,2556,1.105,2.093,38.618,0.98789
+2840,50.0,2840,1.110,2.323,35.037,0.98432
+3124,55.0,3124,1.115,2.590,31.613,0.97748
+3408,60.0,3408,1.115,2.888,28.493,0.96802
+3692,65.0,3692,1.135,3.278,25.219,0.94761
+3976,70.0,3976,1.140,3.737,22.204,0.87057
+4260,75.0,4260,1.135,4.241,19.618,0.77820
+4544,80.0,4544,1.165,4.941,16.882,0.83769
+4828,85.0,4828,1.190,5.880,14.217,0.91246
+5112,90.0,5112,1.215,7.144,11.721,0.85114
+5396,95.0,5396,1.030,7.358,11.381,0.66084
+5680,100.0,5680,1.195,8.793,9.534,0.59198
+
+Published endpoint sanity check:
+  expected maximum optical zoom: about 12.0x
+  expected maximum-zoom HFOV: about 6.9┬░
+
+Restoring original zoom...
+Camera restored to zoom=1

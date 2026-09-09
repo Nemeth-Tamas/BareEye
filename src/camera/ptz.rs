@@ -13,6 +13,9 @@ const TRACKING_PWM_PERIOD: Duration = Duration::from_millis(300);
 const TRACKING_PWM_ON_TIME: Duration = Duration::from_millis(200);
 const TRACKING_PWM_WATCHDOG: Duration = Duration::from_millis(500);
 
+const TRACKING_PAN_LIMIT_MARGIN_DEG: f32 = 8.0;
+const TRACKING_TILT_LIMIT_MARGIN_DEG: f32 = 8.0;
+
 struct TrackingPwm {
     pan: i32,
     tilt: i32,
@@ -129,6 +132,53 @@ struct WorkerState {
     target_zoom: f32,
     last_error: Option<String>,
     last_operation_ms: f32,
+}
+
+fn tracking_safe_bounds(range: ControlRange, margin: f32) -> (f32, f32) {
+    let safe_min = range.min + margin;
+    let safe_max = range.max - margin;
+
+    if safe_min <= safe_max {
+        (safe_min, safe_max)
+    } else {
+        (range.min, range.max)
+    }
+}
+
+fn tracking_safe_target(value: f32, range: ControlRange, margin: f32) -> f32 {
+    let (safe_min, safe_max) = tracking_safe_bounds(range, margin);
+
+    snap_to_step(value.clamp(safe_min, safe_max), range)
+}
+
+fn limit_tracking_output(
+    device: &Device,
+    capabilities: &ControlCapabilities,
+    pan: i32,
+    tilt: i32,
+) -> Result<(i32, i32), String> {
+    let controls = cameras::read_controls(device).map_err(|error| error.to_string())?;
+
+    let mut safe_pan = pan;
+    let mut safe_tilt = tilt;
+
+    if let (Some(actual), Some(range)) = (controls.pan, capabilities.pan) {
+        let (safe_min, safe_max) = tracking_safe_bounds(range, TRACKING_PAN_LIMIT_MARGIN_DEG);
+
+        if (safe_pan < 0 && actual <= safe_min) || (safe_pan > 0 && actual >= safe_max) {
+            safe_pan = 0;
+        }
+    }
+
+    if let (Some(actual), Some(range)) = (controls.tilt, capabilities.tilt) {
+        let (safe_min, safe_max) = tracking_safe_bounds(range, TRACKING_TILT_LIMIT_MARGIN_DEG);
+
+        if (safe_tilt < 0 && actual <= safe_min) || (safe_tilt > 0 && actual >= safe_max) {
+            safe_tilt = 0;
+        }
+    }
+
+    Ok((safe_pan, safe_tilt))
 }
 
 fn apply_tracking_output(
@@ -459,9 +509,10 @@ impl ManualController {
 
                                         let actual = current.pan.unwrap_or(range.default);
 
-                                        Some(snap_to_step(
-                                            (actual + pan_delta).clamp(range.min, range.max),
+                                        Some(tracking_safe_target(
+                                            actual + pan_delta,
                                             range,
+                                            TRACKING_PAN_LIMIT_MARGIN_DEG,
                                         ))
                                     } else {
                                         None
@@ -476,9 +527,10 @@ impl ManualController {
 
                                         let actual = current.tilt.unwrap_or(range.default);
 
-                                        Some(snap_to_step(
-                                            (actual + tilt_delta).clamp(range.min, range.max),
+                                        Some(tracking_safe_target(
+                                            actual + tilt_delta,
                                             range,
+                                            TRACKING_TILT_LIMIT_MARGIN_DEG,
                                         ))
                                     } else {
                                         None
@@ -581,7 +633,23 @@ impl ManualController {
                     if let Some((pan, tilt)) = tracking_pwm.next_output(Instant::now()) {
                         let started = Instant::now();
 
-                        let result = apply_tracking_output(&mut relative_ptz, &device, pan, tilt);
+                        let result = if pan == 0 && tilt == 0 {
+                            apply_tracking_output(&mut relative_ptz, &device, 0, 0)
+                        } else {
+                            match limit_tracking_output(&device, &worker_capabilities, pan, tilt) {
+                                Ok((safe_pan, safe_tilt)) => apply_tracking_output(
+                                    &mut relative_ptz,
+                                    &device,
+                                    safe_pan,
+                                    safe_tilt,
+                                ),
+                                Err(error) => {
+                                    let _ = apply_tracking_output(&mut relative_ptz, &device, 0, 0);
+
+                                    Err(error)
+                                }
+                            }
+                        };
 
                         let mut state = worker_state
                             .lock()
