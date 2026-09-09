@@ -1,0 +1,56 @@
+   Compiling bareeye v0.1.0 (C:\Users\User\Desktop\randomprojectsillneverfinish\BareEye)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.92s
+     Running `target\debug\bareeye.exe --ptz-subdegree-test`
+
+Video devices found: 1
+
+[0] Polycom EagleEye IV USB Camera
+    Device ID: \\?\usb#vid_095d&pid_9204&mi_00#b&1da1f946&0&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\global
+
+Searching for an EagleEye candidate...
+
+BareEye sub-degree absolute PTZ test
+====================================
+Device: Polycom EagleEye IV USB Camera
+Advertised pan step: 0.000 deg | tilt step: 0.000 deg
+Original position: pan=0.000, tilt=0.000
+Test base: pan=0.000, tilt=30.000
+Fractional movement settle: 1500 ms
+
+Opening BareEye preview
+-----------------------
+Requested: 1920x1080 @ 30 FPS, MJPEG
+Selected:  1920x1080 @ 30 FPS, Mjpeg
+
+Stationary image-shift reference
+--------------------------------
+No PTZ command: x_shift=+2 px, y_shift=+60 px
+
+Results
+=======
+axis,requested_deg,reported_before,reported_after,reported_delta,image_shift_px,profile_error
+PAN,+0.25,0.000,0.000,+0.000,+0,1.537
+PAN,+0.50,0.000,0.000,+0.000,-23,1.924
+PAN,+0.75,0.000,0.000,+0.000,-24,1.542
+PAN,+1.00,0.000,0.000,+0.000,-24,1.425
+PAN,-0.25,0.000,0.000,+0.000,+0,0.230
+PAN,-0.50,0.000,0.000,+0.000,+24,2.630
+PAN,-0.75,0.000,0.000,+0.000,+24,2.269
+PAN,-1.00,0.000,0.000,+0.000,+23,1.114
+TILT,+0.25,30.000,30.000,+0.000,+0,0.202
+TILT,+0.50,30.000,30.000,+0.000,+19,2.204
+TILT,+0.75,30.000,30.000,+0.000,+20,1.789
+TILT,+1.00,30.000,30.000,+0.000,+19,1.837
+TILT,-0.25,30.000,30.000,+0.000,+0,0.253
+TILT,-0.50,30.000,30.000,+0.000,-1,1.116
+TILT,-0.75,30.000,28.000,-2.000,-21,1.534
+TILT,-1.00,30.000,28.000,-2.000,-20,1.778
+
+Interpretation:
+  reported_delta < 1 deg + non-zero image shift = possible hidden fractional PTZ
+  integer readback + proportional pixel shifts = likely fractional physical movement
+  0 / 1 deg jumps with matching image shifts = camera probably quantizes to 1 degree
+
+Restoring original camera position...
+
+Camera restored to pan=0.000, tilt=0.000

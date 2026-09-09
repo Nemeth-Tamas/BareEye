@@ -359,10 +359,10 @@ fn estimate_shift(before: &[f32], after: &[f32], maximum_shift: i32) -> (i32, f3
         let mut error = 0.0_f32;
         let mut count = 0_usize;
 
-        for index in start..end {
+        for (index, before_sample) in before.iter().enumerate().take(end).skip(start) {
             let shifted_index = (index as i32 + shift) as usize;
 
-            let before_value = before[index] - mean_before;
+            let before_value = *before_sample - mean_before;
             let after_value = after[shifted_index] - mean_after;
 
             error += (before_value - after_value).abs();

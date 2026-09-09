@@ -3,6 +3,7 @@ mod probe;
 pub mod ptz;
 pub mod ptz_calibration;
 pub mod ptz_subdegree;
+pub mod ptz_zoom_calibration;
 pub mod relative_ptz;
 mod telemetry;
 
