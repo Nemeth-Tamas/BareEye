@@ -10,7 +10,7 @@
 * [x] Read current pan, tilt, and zoom positions where supported
 * [x] Implement absolute PTZ control
 * [x] Investigate relative / velocity PTZ control support
-* [ ] Calibrate the EagleEye relative pan / tilt speed response
+* [x] Calibrate the EagleEye relative pan / tilt speed response
 * [ ] Test whether the EagleEye accepts sub-degree PTZ positions despite its advertised 1° step
 * [ ] Calibrate the EagleEye USB zoom-control value to its actual optical zoom / FOV curve
 * [ ] Implement safe PTZ limit handling

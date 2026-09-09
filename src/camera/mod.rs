@@ -2,6 +2,7 @@ mod capture;
 mod probe;
 pub mod ptz;
 pub mod ptz_calibration;
+pub mod ptz_subdegree;
 pub mod relative_ptz;
 mod telemetry;
 
