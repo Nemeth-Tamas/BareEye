@@ -21,7 +21,7 @@
 * [x] Display the live camera feed with low latency
 * [ ] Add GPU-efficient frame presentation
 * [x] Add camera status and PTZ diagnostics
-* [ ] Add mouse-controlled manual pan, tilt, and zoom
+* [x] Add mouse-controlled manual pan, tilt, and zoom
 * [x] Add keyboard controls for development and recovery
 * [ ] Add selectable 5° manual PTZ stepping
 * [ ] Add selectable 1° fine PTZ stepping for high-zoom control

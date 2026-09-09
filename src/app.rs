@@ -86,6 +86,27 @@ enum PreviewInteraction {
     ManualZoom(f32),
 }
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum ManualPtzStep {
+    Coarse10,
+    Normal5,
+    Fine1,
+}
+
+impl ManualPtzStep {
+    fn degrees(self) -> f32 {
+        match self {
+            Self::Coarse10 => 10.0,
+            Self::Normal5 => 5.0,
+            Self::Fine1 => 1.0,
+        }
+    }
+
+    fn drag_scale(self) -> f32 {
+        self.degrees() / 5.0
+    }
+}
+
 #[derive(Clone)]
 struct SelectedTarget {
     detection: Detection,
@@ -206,6 +227,7 @@ impl PreviewStream {
         ui: &mut egui::Ui,
         detections: &[Detection],
         selected: Option<&Detection>,
+        manual_ptz_step: ManualPtzStep,
     ) -> PreviewInteraction {
         let Some(texture) = &self.texture else {
             return PreviewInteraction::None;
@@ -344,9 +366,11 @@ impl PreviewStream {
         if let Some(drag) = completed_drag
             && drag.length() >= MOUSE_DRAG_MIN_POINTS
         {
+            let drag_scale = manual_ptz_step.drag_scale();
+
             return PreviewInteraction::ManualPanTilt {
-                pan_delta: drag.x * MOUSE_PAN_DEG_PER_POINT,
-                tilt_delta: -drag.y * MOUSE_TILT_DEG_PER_POINT,
+                pan_delta: drag.x * MOUSE_PAN_DEG_PER_POINT * drag_scale,
+                tilt_delta: -drag.y * MOUSE_TILT_DEG_PER_POINT * drag_scale,
             };
         }
 
@@ -561,6 +585,7 @@ struct BareEyeApp {
     info: PreviewInfo,
     ptz: ManualController,
     vision: VisionWorker,
+    manual_ptz_step: ManualPtzStep,
     selected_target: Option<SelectedTarget>,
     tracking_enabled: bool,
     last_tracking_command_at: Option<Instant>,
@@ -606,6 +631,7 @@ impl BareEyeApp {
             info,
             ptz,
             vision,
+            manual_ptz_step: ManualPtzStep::Normal5,
             selected_target: None,
             tracking_enabled: false,
             last_tracking_command_at: None,
@@ -845,23 +871,25 @@ impl BareEyeApp {
             )
         });
 
+        let manual_step = self.manual_ptz_step.degrees();
+
         if left {
-            let result = self.ptz.pan_by(-10.0);
+            let result = self.ptz.pan_by(-manual_step);
             self.record_ptz_result(result);
         }
 
         if right {
-            let result = self.ptz.pan_by(10.0);
+            let result = self.ptz.pan_by(manual_step);
             self.record_ptz_result(result);
         }
 
         if up {
-            let result = self.ptz.tilt_by(5.0);
+            let result = self.ptz.tilt_by(manual_step);
             self.record_ptz_result(result);
         }
 
         if down {
-            let result = self.ptz.tilt_by(-5.0);
+            let result = self.ptz.tilt_by(-manual_step);
             self.record_ptz_result(result);
         }
 
@@ -1203,14 +1231,38 @@ impl eframe::App for BareEyeApp {
 
                 ui.separator();
 
+                ui.label("Manual step:");
+
+                ui.selectable_value(
+                    &mut self.manual_ptz_step,
+                    ManualPtzStep::Coarse10,
+                    "10°",
+                );
+
+                ui.selectable_value(
+                    &mut self.manual_ptz_step,
+                    ManualPtzStep::Normal5,
+                    "5°",
+                );
+
+                ui.selectable_value(
+                    &mut self.manual_ptz_step,
+                    ManualPtzStep::Fine1,
+                    "1° Fine",
+                );
+
+                ui.separator();
+
                 let buttons_enabled = self.ptz_buttons_enabled();
+
+                let manual_step = self.manual_ptz_step.degrees();
 
                 if ui
                     .add_enabled(buttons_enabled, egui::Button::new("Left"))
                     .clicked()
                 {
                     self.mark_ptz_button_used();
-                    let result = self.ptz.pan_by(-10.0);
+                    let result = self.ptz.pan_by(-manual_step);
                     self.record_ptz_result(result);
                 }
 
@@ -1219,7 +1271,7 @@ impl eframe::App for BareEyeApp {
                     .clicked()
                 {
                     self.mark_ptz_button_used();
-                    let result = self.ptz.pan_by(10.0);
+                    let result = self.ptz.pan_by(manual_step);
                     self.record_ptz_result(result);
                 }
 
@@ -1228,7 +1280,7 @@ impl eframe::App for BareEyeApp {
                     .clicked()
                 {
                     self.mark_ptz_button_used();
-                    let result = self.ptz.tilt_by(5.0);
+                    let result = self.ptz.tilt_by(manual_step);
                     self.record_ptz_result(result);
                 }
 
@@ -1237,7 +1289,7 @@ impl eframe::App for BareEyeApp {
                     .clicked()
                 {
                     self.mark_ptz_button_used();
-                    let result = self.ptz.tilt_by(-5.0);
+                    let result = self.ptz.tilt_by(-manual_step);
                     self.record_ptz_result(result);
                 }
 
@@ -1359,6 +1411,7 @@ impl eframe::App for BareEyeApp {
                     ui,
                     &vision.detections,
                     selected_detection.as_ref(),
+                    self.manual_ptz_step,
                 );
 
                 match interaction {
