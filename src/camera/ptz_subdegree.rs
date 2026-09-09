@@ -1,4 +1,5 @@
 use cameras::{Controls, Device, Frame};
+use eframe::egui;
 use std::error::Error;
 use std::io;
 use std::sync::{Arc, Mutex, PoisonError};
