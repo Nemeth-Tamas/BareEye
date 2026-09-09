@@ -24,6 +24,7 @@ const TRACKING_ABSOLUTE_THRESHOLD_Y: f32 = 0.16;
 
 const TRACKING_ABSOLUTE_PAN_GAIN_DEG: f32 = 65.0;
 const TRACKING_ABSOLUTE_TILT_GAIN_DEG: f32 = 40.0;
+const TRACKING_ABSOLUTE_SETTLE_TIME: Duration = Duration::from_millis(400);
 
 pub fn run(
     camera: cameras::Camera,
@@ -512,6 +513,9 @@ struct BareEyeApp {
     last_tracking_vision_frame: u64,
     tracking_pan_speed: i32,
     tracking_tilt_speed: i32,
+    absolute_recenter_active: bool,
+    absolute_recenter_completed_at: Option<Instant>,
+    absolute_recenter_completed_frame: u64,
     debug: bool,
     ptz_error: Option<String>,
     last_ptz_button_at: Option<Instant>,
@@ -554,6 +558,9 @@ impl BareEyeApp {
             last_tracking_vision_frame: 0,
             tracking_pan_speed: 0,
             tracking_tilt_speed: 0,
+            absolute_recenter_active: false,
+            absolute_recenter_completed_at: None,
+            absolute_recenter_completed_frame: 0,
             debug,
             ptz_error: None,
             last_ptz_button_at: None,
@@ -622,8 +629,35 @@ impl BareEyeApp {
 
     fn update_tracking(&mut self, vision_frame: u64) {
         if !self.tracking_enabled {
+            self.absolute_recenter_active = false;
+            self.absolute_recenter_completed_at = None;
             self.stop_tracking_motion();
             return;
+        }
+
+        if self.absolute_recenter_active {
+            if self.ptz.tracking_busy() {
+                return;
+            }
+
+            match self.absolute_recenter_completed_at {
+                None => {
+                    self.absolute_recenter_completed_at = Some(Instant::now());
+                    self.absolute_recenter_completed_frame = vision_frame;
+                    self.last_tracking_vision_frame = vision_frame;
+                    return;
+                }
+                Some(completed_at) => {
+                    if completed_at.elapsed() < TRACKING_ABSOLUTE_SETTLE_TIME
+                        || vision_frame == self.absolute_recenter_completed_frame
+                    {
+                        return;
+                    }
+                }
+            }
+
+            self.absolute_recenter_active = false;
+            self.absolute_recenter_completed_at = None;
         }
 
         let target_center = self
@@ -673,6 +707,8 @@ impl BareEyeApp {
                 Ok(true) => {
                     self.tracking_pan_speed = 0;
                     self.tracking_tilt_speed = 0;
+                    self.absolute_recenter_active = true;
+                    self.absolute_recenter_completed_at = None;
                     self.last_tracking_command_at = Some(Instant::now());
                     self.ptz_error = None;
                 }
