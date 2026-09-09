@@ -122,6 +122,14 @@ impl SelectedTarget {
     }
 
     fn refresh(&mut self, detections: &[Detection]) {
+        if let Some(detection) = detections.iter().find(|detection| {
+            detection.kind == self.detection.kind && detection.id == self.detection.id
+        }) {
+            self.detection = detection.clone();
+            self.visible = true;
+            return;
+        }
+
         let current_x = (self.detection.x1 + self.detection.x2) * 0.5;
         let current_y = (self.detection.y1 + self.detection.y2) * 0.5;
 
@@ -291,11 +299,7 @@ impl PreviewStream {
 
         for detection in detections {
             let is_selected = selected.is_some_and(|selected| {
-                detection.kind == selected.kind
-                    && detection.x1 == selected.x1
-                    && detection.y1 == selected.y1
-                    && detection.x2 == selected.x2
-                    && detection.y2 == selected.y2
+                detection.kind == selected.kind && detection.id == selected.id
             });
 
             let color = if is_selected {
@@ -342,14 +346,16 @@ impl PreviewStream {
 
             let label = if is_selected {
                 format!(
-                    "LOCKED {} {:.0}%",
+                    "LOCKED {} #{} {:.0}%",
                     detection.kind.label(),
+                    detection.id,
                     detection.confidence * 100.0
                 )
             } else {
                 format!(
-                    "{} {:.0}%",
+                    "{} #{} {:.0}%",
                     detection.kind.label(),
+                    detection.id,
                     detection.confidence * 100.0
                 )
             };

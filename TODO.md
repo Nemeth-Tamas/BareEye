@@ -23,9 +23,9 @@
 * [x] Add camera status and PTZ diagnostics
 * [x] Add mouse-controlled manual pan, tilt, and zoom
 * [x] Add keyboard controls for development and recovery
-* [ ] Add selectable 5° manual PTZ stepping
-* [ ] Add selectable 1° fine PTZ stepping for high-zoom control
-* [ ] Keep capture, vision, control, and UI work isolated from each other
+* [x] Add selectable 5° manual PTZ stepping
+* [x] Add selectable 1° fine PTZ stepping for high-zoom control
+* [x] Keep capture, vision, control, and UI work isolated from each other
 
 ## 3. Vision pipeline
 
@@ -36,7 +36,7 @@
 * [x] Draw interactive detection boxes over the live image
 * [ ] Maintain stable identities between frames
 * [ ] Add short-term target re-identification after occlusion
-* [ ] Keep the vision pipeline real-time by dropping stale frames
+* [x] Keep the vision pipeline real-time by dropping stale frames
 
 ## 4. Target selection
 

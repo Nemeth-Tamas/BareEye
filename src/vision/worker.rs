@@ -14,6 +14,9 @@ const PERSON_CONFIDENCE_THRESHOLD: f32 = 0.25;
 const FACE_CONFIDENCE_THRESHOLD: f32 = 0.25;
 const LETTERBOX_VALUE: f32 = 114.0 / 255.0;
 
+const IDENTITY_MAX_MISSED_FRAMES: u32 = 12;
+const IDENTITY_MIN_IOU: f32 = 0.05;
+
 enum VisionSignal {
     Frame,
     Shutdown,
@@ -42,6 +45,146 @@ pub struct Detection {
     pub x2: f32,
     pub y2: f32,
     pub confidence: f32,
+    pub id: u64,
+}
+
+#[derive(Clone)]
+struct IdentityTrack {
+    id: u64,
+    detection: Detection,
+    missed_frames: u32,
+}
+
+struct IdentityTracker {
+    next_id: u64,
+    tracks: Vec<IdentityTrack>,
+}
+
+impl IdentityTracker {
+    fn new() -> Self {
+        Self {
+            next_id: 1,
+            tracks: Vec::new(),
+        }
+    }
+
+    fn assign(&mut self, detections: &mut [Detection]) {
+        let mut candidates = Vec::new();
+
+        for (track_index, track) in self.tracks.iter().enumerate() {
+            for (detection_index, detection) in detections.iter().enumerate() {
+                if track.detection.kind != detection.kind {
+                    continue;
+                }
+
+                let (track_x, track_y) = detection_center(&track.detection);
+                let (detection_x, detection_y) = detection_center(detection);
+
+                let distance = (detection_x - track_x).hypot(detection_y - track_y);
+
+                let minimum_distance = match detection.kind {
+                    DetectionKind::Person => 100.0,
+                    DetectionKind::Face => 60.0,
+                };
+
+                let maximum_distance = detection_diagonal(&track.detection)
+                    .max(detection_diagonal(detection))
+                    .mul_add(1.25, 0.0)
+                    .max(minimum_distance);
+
+                let overlap = detection_iou(&track.detection, detection);
+
+                if distance > maximum_distance && overlap < IDENTITY_MIN_IOU {
+                    continue;
+                }
+
+                let normalized_distance = distance / maximum_distance.max(1.0);
+                let cost = normalized_distance + (1.0 - overlap) * 0.35;
+
+                candidates.push((cost, track_index, detection_index));
+            }
+        }
+
+        candidates.sort_by(|left, right| left.0.total_cmp(&right.0));
+
+        let mut track_used = vec![false; self.tracks.len()];
+        let mut detection_used = vec![false; detections.len()];
+
+        for (_, track_index, detection_index) in candidates {
+            if track_used[track_index] || detection_used[detection_index] {
+                continue;
+            }
+
+            let id = self.tracks[track_index].id;
+
+            detections[detection_index].id = id;
+
+            self.tracks[track_index].detection = detections[detection_index].clone();
+            self.tracks[track_index].missed_frames = 0;
+
+            track_used[track_index] = true;
+            detection_used[detection_index] = true;
+        }
+
+        for (track_index, track) in self.tracks.iter_mut().enumerate() {
+            if !track_used[track_index] {
+                track.missed_frames += 1;
+            }
+        }
+
+        for detection_index in 0..detections.len() {
+            if detection_used[detection_index] {
+                continue;
+            }
+
+            let id = self.next_id;
+            self.next_id += 1;
+
+            detections[detection_index].id = id;
+
+            self.tracks.push(IdentityTrack {
+                id,
+                detection: detections[detection_index].clone(),
+                missed_frames: 0,
+            });
+        }
+
+        self.tracks
+            .retain(|track| track.missed_frames <= IDENTITY_MAX_MISSED_FRAMES);
+    }
+}
+
+fn detection_center(detection: &Detection) -> (f32, f32) {
+    (
+        (detection.x1 + detection.x2) * 0.5,
+        (detection.y1 + detection.y2) * 0.5,
+    )
+}
+
+fn detection_diagonal(detection: &Detection) -> f32 {
+    (detection.x2 - detection.x1).hypot(detection.y2 - detection.y1)
+}
+
+fn detection_iou(left: &Detection, right: &Detection) -> f32 {
+    let intersection_left = left.x1.max(right.x1);
+    let intersection_top = left.y1.max(right.y1);
+    let intersection_right = left.x2.min(right.x2);
+    let intersection_bottom = left.y2.min(right.y2);
+
+    let intersection_width = (intersection_right - intersection_left).max(0.0);
+    let intersection_height = (intersection_bottom - intersection_top).max(0.0);
+    let intersection = intersection_width * intersection_height;
+
+    let left_area = (left.x2 - left.x1).max(0.0) * (left.y2 - left.y1).max(0.0);
+    let right_area = (right.x2 - right.x1).max(0.0) * (right.y2 - right.y1).max(0.0);
+
+    let union = left_area + right_area - intersection;
+
+    if union <= f32::EPSILON {
+        0.0
+    } else {
+        intersection / union
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -234,6 +377,8 @@ fn run_worker(
         snapshot.last_error = None;
     }
 
+    let mut identity_tracker = IdentityTracker::new();
+
     while let Ok(signal) = receiver.recv() {
         match signal {
             VisionSignal::Frame => {
@@ -247,7 +392,13 @@ fn run_worker(
                     continue;
                 };
 
-                process_frame(&mut person_session, &mut face_session, &shared, &frame);
+                process_frame(
+                    &mut person_session,
+                    &mut face_session,
+                    &mut identity_tracker,
+                    &shared,
+                    &frame,
+                );
             }
             VisionSignal::Shutdown => break,
         }
@@ -257,6 +408,7 @@ fn run_worker(
 fn process_frame(
     person_session: &mut Session,
     face_session: &mut Session,
+    identity_tracker: &mut IdentityTracker,
     shared: &Arc<Shared>,
     frame: &ColorImage,
 ) {
@@ -303,6 +455,8 @@ fn process_frame(
     };
 
     detections.extend(face_detections);
+
+    identity_tracker.assign(&mut detections);
 
     let mut snapshot = shared
         .snapshot
@@ -458,6 +612,7 @@ fn decode_detections(
             x2,
             y2,
             confidence,
+            id: 0,
         });
     }
 
