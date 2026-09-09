@@ -3,7 +3,7 @@
 ## 1. Hardware foundation
 
 * [x] Enumerate Windows video capture devices
-* [ ] Identify the Polycom EagleEye IV reliably
+* [x] Identify the Polycom EagleEye IV reliably
 * [x] Open a live 1080p video stream
 * [x] Enumerate supported camera-control properties
 * [x] Read pan, tilt, zoom, and focus ranges

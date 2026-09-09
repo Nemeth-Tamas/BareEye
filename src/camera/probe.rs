@@ -1,5 +1,8 @@
 use cameras::{ControlRange, Device};
 
+const EAGLEEYE_USB_VID: &str = "vid_095d";
+const EAGLEEYE_USB_PID: &str = "pid_9204";
+
 pub fn print_device_list(devices: &[Device]) {
     println!();
     println!("Video devices found: {}", devices.len());
@@ -12,7 +15,14 @@ pub fn print_device_list(devices: &[Device]) {
 }
 
 pub fn find_eagleeye(devices: &[Device]) -> Option<&Device> {
-    devices.iter().find(|device| is_eagleeye_candidate(device))
+    devices
+        .iter()
+        .find(|device| has_eagleeye_usb_id(device))
+        .or_else(|| {
+            devices
+                .iter()
+                .find(|device| is_eagleeye_name_candidate(device))
+        })
 }
 
 pub fn probe_device(device: &Device) {
@@ -25,7 +35,13 @@ pub fn probe_device(device: &Device) {
     probe_camera_controls(device);
 }
 
-fn is_eagleeye_candidate(device: &Device) -> bool {
+fn has_eagleeye_usb_id(device: &Device) -> bool {
+    let id = device.id.0.to_ascii_lowercase();
+
+    id.contains(EAGLEEYE_USB_VID) && id.contains(EAGLEEYE_USB_PID)
+}
+
+fn is_eagleeye_name_candidate(device: &Device) -> bool {
     let name = device.name.to_ascii_lowercase();
 
     name.contains("eagleeye")
