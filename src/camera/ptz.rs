@@ -744,6 +744,17 @@ impl ManualController {
         self.send(WorkerCommand::Relative(Axis::Tilt, amount))
     }
 
+    pub fn pan_tilt_by(&self, pan_delta: f32, tilt_delta: f32) -> Result<(), String> {
+        if pan_delta.abs() <= f32::EPSILON && tilt_delta.abs() <= f32::EPSILON {
+            return Ok(());
+        }
+
+        self.send(WorkerCommand::TrackAbsolute {
+            pan_delta,
+            tilt_delta,
+        })
+    }
+
     pub fn tracking_busy(&self) -> bool {
         self.tracking_pending.load(Ordering::Acquire)
     }

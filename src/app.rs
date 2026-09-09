@@ -14,6 +14,11 @@ const SLOW_DISPLAY_GAP: Duration = Duration::from_millis(45);
 const SLOW_UI_GAP: Duration = Duration::from_millis(50);
 const PTZ_BUTTON_COOLDOWN: Duration = Duration::from_millis(200);
 
+const MOUSE_DRAG_MIN_POINTS: f32 = 6.0;
+const MOUSE_PAN_DEG_PER_POINT: f32 = 0.08;
+const MOUSE_TILT_DEG_PER_POINT: f32 = 0.06;
+const MOUSE_ZOOM_STEP: f32 = 400.0;
+
 const TRACKING_COMMAND_INTERVAL: Duration = Duration::from_millis(100);
 
 const TRACKING_DEADZONE_X: f32 = 0.04;
@@ -77,6 +82,8 @@ enum PreviewInteraction {
     None,
     Clear,
     Select(Detection),
+    ManualPanTilt { pan_delta: f32, tilt_delta: f32 },
+    ManualZoom(f32),
 }
 
 #[derive(Clone)]
@@ -149,6 +156,7 @@ struct PreviewStream {
     worker_stats: Arc<Mutex<PreviewWorkerStats>>,
     texture: Option<egui::TextureHandle>,
     name: String,
+    manual_drag: egui::Vec2,
 }
 
 impl PreviewStream {
@@ -194,7 +202,7 @@ impl PreviewStream {
     }
 
     fn show(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         detections: &[Detection],
         selected: Option<&Detection>,
@@ -209,8 +217,40 @@ impl PreviewStream {
         let height = width / aspect;
 
         let response = ui.add(
-            egui::Image::new((texture.id(), egui::vec2(width, height))).sense(egui::Sense::click()),
+            egui::Image::new((texture.id(), egui::vec2(width, height)))
+                .sense(egui::Sense::click_and_drag()),
         );
+
+        if response.drag_started() {
+            self.manual_drag = egui::Vec2::ZERO;
+        }
+
+        if response.dragged() {
+            self.manual_drag += response.drag_delta();
+        }
+
+        let completed_drag = if response.drag_stopped() {
+            let drag = self.manual_drag;
+            self.manual_drag = egui::Vec2::ZERO;
+            Some(drag)
+        } else {
+            None
+        };
+
+        let wheel_y = if response.hovered() {
+            ui.input(|input| {
+                input
+                    .events
+                    .iter()
+                    .filter_map(|event| match event {
+                        egui::Event::MouseWheel { delta, .. } => Some(delta.y),
+                        _ => None,
+                    })
+                    .sum::<f32>()
+            })
+        } else {
+            0.0
+        };
 
         let image_rect = response.rect;
 
@@ -299,6 +339,19 @@ impl PreviewStream {
                 egui::FontId::proportional(16.0),
                 color,
             );
+        }
+
+        if let Some(drag) = completed_drag
+            && drag.length() >= MOUSE_DRAG_MIN_POINTS
+        {
+            return PreviewInteraction::ManualPanTilt {
+                pan_delta: drag.x * MOUSE_PAN_DEG_PER_POINT,
+                tilt_delta: -drag.y * MOUSE_TILT_DEG_PER_POINT,
+            };
+        }
+
+        if wheel_y.abs() > f32::EPSILON {
+            return PreviewInteraction::ManualZoom(wheel_y.signum() * MOUSE_ZOOM_STEP);
         }
 
         if response.clicked() {
@@ -496,6 +549,7 @@ fn spawn_camera_stream(
             worker_stats,
             texture: None,
             name: "bareeye-camera".to_owned(),
+            manual_drag: egui::Vec2::ZERO,
         },
         telemetry,
     )
@@ -607,6 +661,17 @@ impl BareEyeApp {
         }
 
         if error.is_sign_positive() { 1 } else { -1 }
+    }
+
+    fn begin_manual_control(&mut self) {
+        self.tracking_enabled = false;
+        self.absolute_recenter_active = false;
+        self.absolute_recenter_completed_at = None;
+        self.tracking_pan_speed = 0;
+        self.tracking_tilt_speed = 0;
+
+        let result = self.ptz.stop_tracking();
+        self.record_ptz_result(result);
     }
 
     fn stop_tracking_motion(&mut self) {
@@ -1192,7 +1257,9 @@ impl eframe::App for BareEyeApp {
             });
 
             ui.horizontal(|ui| {
-                ui.label("Keys: WASD/Arrows = PTZ  |  Q/E = Zoom  |  C = Center");
+                ui.label(
+                    "Mouse: drag video = PTZ  |  wheel = Zoom  |  Keys: WASD/Arrows = PTZ  |  Q/E = Zoom  |  C = Center",
+                );
 
                 ui.separator();
 
@@ -1274,7 +1341,7 @@ impl eframe::App for BareEyeApp {
 
             ui.separator();
 
-            let Some(stream) = self.stream.as_ref() else {
+            let Some(stream) = self.stream.as_mut() else {
                 ui.centered_and_justified(|ui| {
                     ui.label("Camera stream has stopped.");
                 });
@@ -1302,6 +1369,21 @@ impl eframe::App for BareEyeApp {
                     }
                     PreviewInteraction::Select(detection) => {
                         self.selected_target = Some(SelectedTarget::new(detection));
+                    }
+                    PreviewInteraction::ManualPanTilt {
+                        pan_delta,
+                        tilt_delta,
+                    } => {
+                        self.begin_manual_control();
+
+                        let result = self.ptz.pan_tilt_by(pan_delta, tilt_delta);
+                        self.record_ptz_result(result);
+                    }
+                    PreviewInteraction::ManualZoom(amount) => {
+                        self.begin_manual_control();
+
+                        let result = self.ptz.zoom_by(amount);
+                        self.record_ptz_result(result);
                     }
                 }
             } else {
